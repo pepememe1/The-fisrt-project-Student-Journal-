@@ -1,2 +1,2 @@
 # The-fisrt-project-Student-Journal-
-A simple Python program using libraries and QT5. The program is based on a log of student homework grades.
+A simple Python program using libraries and QT5. The program is based on a log of student homework grades. It includes features for exporting tables to MS Excel, changing column widths, and displaying statistics and versions. It also saves each student and their grades to a JSON file. This means that if you accidentally close the program or your PC shuts down, the data will be preserved. You can also delete and create new tables. The program is still in its early stages.
