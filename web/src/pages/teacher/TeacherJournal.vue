@@ -9,7 +9,11 @@
 //  • зебра, цветные оценки/средний, строка «средний по группе»;
 //  • дата нового занятия — автоматически сегодняшняя.
 // Всё пишется в те же таблицы, что синк десктопа → изменения доезжают до ПК pull'ом.
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+// Положение ПКМ-меню считает общий модуль — тот же, что у меню сообщения в мессенджере.
+// Своя копия правила разошлась бы с ним на первой же правке (и уже разошлась: здесь
+// клампилась только горизонталь).
+import { menuMaxHeight, placeMenu } from '@/utils/menuPlacement'
 import { useRoute } from 'vue-router'
 import { teacherApi, termsApi } from '@/api/endpoints'
 import {
@@ -442,8 +446,29 @@ function onCell(s, col, value) {
 }
 
 // ── ПКМ-меню на заголовке занятия (изменить / пересдача / удалить) ──────────────
+// 🔥 ТОТ ЖЕ ДЕФЕКТ, ЧТО В МЕССЕНДЖЕРЕ (найден при разборе жалобы 05.09.2026: «меню
+// уезжает за край окна»). Здесь клампилась только ГОРИЗОНТАЛЬ, причём числом 200, а
+// вертикаль бралась как есть — у занятия в нижней части журнала меню уходило под
+// нижнюю кромку вместе с пунктом «Удалить занятие». Теперь положение считает общий
+// `utils/menuPlacement.js` по ИЗМЕРЕННОМУ размеру: своя копия правила разошлась бы с
+// мессенджерской на первой же правке.
 const ctx = ref({ show: false, x: 0, y: 0, lesson: null })
-function openCtx(e, l) { ctx.value = { show: true, x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, lesson: l } }
+const ctxBox = ref(null)
+const ctxPos = ref(null)          // null — ещё не измерили
+function placeCtx() {
+  const el = ctxBox.value
+  if (!el) return
+  const r = el.getBoundingClientRect()
+  ctxPos.value = placeMenu({
+    x: ctx.value.x, y: ctx.value.y, w: r.width, h: r.height,
+    vw: window.innerWidth, vh: window.innerHeight,
+  })
+}
+function openCtx(e, l) {
+  ctxPos.value = null              //первый кадр невидим: пока размер неизвестен, меню прыгнуло бы
+  ctx.value = { show: true, x: e.clientX, y: e.clientY, lesson: l }
+  nextTick(placeCtx)
+}
 function closeCtx() { if (ctx.value.show) ctx.value.show = false }
 function ctxEdit() { openEditLesson(ctx.value.lesson); closeCtx() }
 function ctxDelete() { const l = ctx.value.lesson; closeCtx(); delLesson(l) }
@@ -850,8 +875,12 @@ async function downloadVedomost(fmt) {
     </div>
 
     <!-- Контекстное меню (ПКМ) -->
-    <div v-if="ctx.show" class="fixed z-50 min-w-48 rounded-lg border border-border2 bg-card py-1 shadow-card"
-         :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @click.stop>
+    <div v-if="ctx.show" ref="ctxBox"
+         class="fixed z-50 min-w-48 overflow-y-auto rounded-lg border border-border2 bg-card py-1 shadow-card transition-opacity"
+         :class="ctxPos ? 'opacity-100' : 'opacity-0'"
+         :style="{ left: (ctxPos ? ctxPos.left : ctx.x) + 'px', top: (ctxPos ? ctxPos.top : ctx.y) + 'px',
+                   maxHeight: menuMaxHeight(typeof window === 'undefined' ? 800 : window.innerHeight) + 'px' }"
+         @click.stop>
       <button class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2" @click="ctxEdit">✎ {{ locale.t('teacherJournal.ctxEditTopic', 'Изменить тему / дату') }}</button>
       <button v-if="ctx.lesson?.type === 'Экзамен'" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2" @click="ctxRetake">📅 {{ locale.t('teacherJournal.ctxAssignRetake', 'Назначить пересдачу') }}</button>
       <div class="my-1 border-t border-border" />

@@ -140,6 +140,21 @@ def course_and_semester(enrollment_year: int, term_year: str, term_semester: int
     return course, overall_semester
 
 
+def enrollment_year_for_course(course: int, term_year: str, term_semester: int = 1) -> int:
+    """Год поступления по КУРСУ и текущему термину — обратная `course_and_semester`.
+
+    Нужна при заведении группы: администратор знает, на каком курсе группа СЕЙЧАС, а
+    системе для учебного плана и для всех расчётов нужен год поступления. Спрашивать оба
+    числа и надеяться, что они не разойдутся, — значит завести два источника одной правды.
+
+    ⚠️ Формула ОДНА и обратима до символа: `course_and_semester` считает
+    `course = (год термина − год поступления) + 1`, значит здесь
+    `год поступления = год термина − (курс − 1)`. Держит `tests/test_study_hours.py`:
+    любой курс, прогнанный туда и обратно, обязан вернуться сам в себя.
+    """
+    return int(str(term_year).split("/")[0]) - (int(course) - 1)
+
+
 def subject_zet_state(lessons, records, zet, term_over: bool, scale: str = "5"):
     """Состояние предмета по ЗЕТ: "passed" | "pending" | "failed" | None (docs/PLAN-ZET.md §2).
 

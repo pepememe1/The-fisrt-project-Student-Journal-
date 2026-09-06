@@ -621,6 +621,11 @@ def _msg_out(m: Message, me_id: str = "", sender_name: str = "", att: dict = Non
         "edited_at": "" if deleted else (m.edited_at or ""),
         "deleted": deleted,
         "reply_to_id": m.reply_to_id or None,
+        #«Ответить с цитатой»: выделенный кусок оригинала (снимок). Пусто — обычный ответ,
+        #клиент показывает начало исходного сообщения, как и раньше.
+        #⚠️ У тумбстоуна цитаты нет: «удалил у всех» обязано убирать и текст, который
+        #процитировали ИЗ этого сообщения, иначе удаление обходится ответом на самого себя.
+        "reply_quote": "" if deleted else (getattr(m, "reply_quote", "") or ""),
         #Вложение — метаданные, БЕЗ ссылки. Ссылка выдаётся отдельной ручкой, живёт
         #минуты и только участнику: положи её сюда — и она уедет пересылкой в чужой чат
         #вместе с текстом сообщения, а срок у неё был бы вечный.
@@ -825,6 +830,30 @@ def _attach_rich_meta(db: Session, msgs: list, viewer_id: str = "") -> None:
         return
     _attach_report_meta(db, msgs)
     _attach_activity_meta(db, msgs, viewer_id)
+    _blank_quotes_of_deleted(db, msgs)
+
+
+def _blank_quotes_of_deleted(db: Session, msgs: list) -> None:
+    """Цитата УСТУПАЕТ удалению оригинала — иначе «удалить у всех» обходится цитатой.
+
+    🔒 Снимок цитаты сделан ради ПРАВОК: отредактированный оригинал не должен менять то,
+    на что человек отвечал. Но удаление — другое событие: автор убрал сказанное у всех, и
+    если процитированный кусок продолжает висеть в чужом ответе, гарантия удаления
+    ничего не значит. Проверять это на КЛИЕНТЕ мало: оригинал может быть старше
+    подгруженной страницы (лента отдаёт по 50), и тогда клиенту просто нечего сверять.
+
+    Один запрос на страницу, и только по тем сообщениям, где цитата реально есть.
+    """
+    ids = {m.get("reply_to_id") for m in msgs if m.get("reply_quote") and m.get("reply_to_id")}
+    if not ids:
+        return
+    gone = {row.id for row in db.query(Message.id)
+            .filter(Message.id.in_(ids), Message.deleted_at != "").all()}
+    if not gone:
+        return
+    for m in msgs:
+        if m.get("reply_to_id") in gone:
+            m["reply_quote"] = ""
 
 
 #§D3: белый список эмодзи-реакций (как в плане). Ничего сверх — предсказуемо и безопасно.

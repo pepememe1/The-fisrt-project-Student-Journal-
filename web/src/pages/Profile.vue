@@ -16,6 +16,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { useProfileStore } from '@/stores/profile'
 import { useLocaleStore } from '@/stores/locale'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { PRESETS } from '@/theme/palette'
 import { NAME_FONTS } from '@/config/nameFonts'
 import { NAME_EFFECTS, nameDecor } from '@/config/nameEffects'
@@ -34,6 +35,7 @@ const auth = useAuthStore()
 const profile = useProfileStore()
 const locale = useLocaleStore()
 const { confirm } = useConfirm()
+const toast = useToast()
 const cardRef = ref(null)
 
 // ── Пасхалки профиля: штамп Papers Please и точка сохранения Undertale ──
@@ -78,6 +80,8 @@ const colorFontDirty = computed(() =>
 const dirty = computed(() => colorFontDirty.value || !!cardRef.value?.isDirty)
 const saving = ref(false)
 
+// Возвращает true/false — получилось ли. Молчаливый провал у кнопки «Сохранить»
+// неотличим от «кнопка не работает», и именно так он и был описан в жалобе.
 async function saveAll() {
   saving.value = true
   try {
@@ -93,6 +97,9 @@ async function saveAll() {
     }
     if (cardRef.value?.isDirty) tasks.push(cardRef.value.commit())
     await Promise.all(tasks)
+    return true
+  } catch {
+    return false
   } finally { saving.value = false }
 }
 function discardAll() {
@@ -100,6 +107,13 @@ function discardAll() {
   draftFont.value = profile.font
   draftEffect.value = profile.effect          //по той же причине, что и в saveAll: иначе
   draftNameColor.value = profile.nameColor    //«Отменить» не снимало бы признак правки
+  //⚠️ Метки двигаем ВМЕСТЕ с черновиками. Без этого после «Отменить» черновик равен
+  //сохранённому, а метка отстала — и первое же обновление с сервера снова разошлось бы
+  //с черновиком, зажигая «есть несохранённые изменения» на ровном месте.
+  lastSyncedColor = profile.color
+  lastSyncedFont = profile.font
+  lastSyncedEffect = profile.effect
+  lastSyncedNameColor = profile.nameColor
   cardRef.value?.discard()
 }
 
@@ -108,7 +122,15 @@ function discardAll() {
 // не молчаливая потеря правок. Закрытие мимо кнопок (Esc/клик по фону) = «Отменить»,
 // как и у любого другого confirm() в проекте — переход не блокируем в любом случае:
 // плашка отвечает КАК уйти, а не блокирует уход целиком.
-onBeforeRouteLeave(async () => {
+onBeforeRouteLeave(async (to) => {
+  // 🔥 ВЫХОД ИЗ АККАУНТА НЕ СТОРОЖИМ (06.09.2026, жалоба Влада). На `/login` уводит
+  // logout, и он УЖЕ СЛУЧИЛСЯ: токена нет, сохранять нечем. Вопрос «сохранить перед
+  // уходом?» в этот момент — ловушка: «Сохранить» уходит в сеть без авторизации и молча
+  // не срабатывает, «Отменить» гасит черновик, которого человек не заводил, а уйти он
+  // всё равно уйдёт. Ровно это и описано в жалобе словами «кнопки ни на что не влияют».
+  // ⚠️ То же правило уже записано в страже пасхалок (`router/index.js`): «„точно уйти?"
+  // поверх уже начатого выхода — это ловушка, а не забота».
+  if (to.path === '/login') return true
   if (!dirty.value) return true
   const save = await confirm({
     title: locale.t('profile.unsavedTitle', 'Есть несохранённые изменения'),
@@ -116,9 +138,14 @@ onBeforeRouteLeave(async () => {
     okText: locale.t('profile.saveAndLeave', 'Сохранить'),
     cancelText: locale.t('profile.discardAndLeave', 'Отменить'),
   })
-  if (save) await saveAll()
-  else discardAll()
-  return true
+  if (!save) { discardAll(); return true }
+  // ⚠️ Отказ сохранения ПОКАЗЫВАЕМ и с страницы НЕ уходим. Раньше ошибка тонула в
+  // `finally`, и «Сохранить» действительно ничего не делало: человек уходил, правки
+  // пропадали, сообщения не было. Уход — часть обещания кнопки, и если обещание не
+  // выполнено, уходить нельзя.
+  const ok = await saveAll()
+  if (!ok) toast.error(locale.t('profile.saveFailed', 'Не удалось сохранить изменения'))
+  return ok
 })
 
 // ── Стиль никнейма ───────────────────────────────────────────────────────────────────

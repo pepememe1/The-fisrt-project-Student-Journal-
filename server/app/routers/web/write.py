@@ -635,6 +635,32 @@ def admin_group_archive_witness(_admin: User = Depends(require_admin),
 @router.post("/admin/groups")
 def admin_create_group(payload: dict = Body(...),
                        _admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Завести группу: {name, course | enrollment_year, specialty_code?, category?}.
+
+    🎓 КУРС И ГОД ПОСТУПЛЕНИЯ — ОДНО И ТО ЖЕ ЧИСЛО В ДВУХ ВИДАХ (06.09.2026, требование
+    Влада: «при создании группы указывается курс и год поступления, и программа обучения
+    подтягивается с программы обучения»). Администратор знает КУРС, системе нужен ГОД
+    ПОСТУПЛЕНИЯ: от него считаются курс, семестр, ЗЕТ и ключи `SubjectHours`. Поэтому
+    принимаем любое из двух и ВЫВОДИМ второе — общей формулой
+    `study_hours.enrollment_year_for_course`, обратной к `course_and_semester`.
+
+    ⚠️ Хранится ГОД, а не курс. Курс — величина, которая меняется сама со временем;
+    хранить её значило бы заводить число, обязанное расти по календарю, и раз в год
+    вручную его поправлять. Ровно этим и был вызван баг «в расписании третий курс, а в
+    профилях второй».
+
+    ⚠️ Свидетельство курса (`last_course`) ставим СРАЗУ — но нужно оно НЕ автопереводу
+    (тот про него не знает вовсе и триггерится календарём), а `group_archive.candidates`:
+    без пары «курс + учебный год» вычислить «не перешла на следующий курс» не из чего.
+    Формулировка уточнена 06.09.2026 по возражению Полковника — прежняя обещала связь,
+    которой в коде нет, и следующий читатель либо не тронул бы строку зря, либо снял бы
+    её как дублирующую и молча ослепил архив групп.
+
+    📚 `specialty_code` — необязателен, но с ним программа обучения подтягивается САМА
+    (тот же путь, что у ручного импорта учебного плана). Не подтянулась — группа всё
+    равно создаётся, а причина возвращается полем `plan_error`: молчаливый отказ здесь
+    означал бы группу без предметов и без объяснения, почему их нет.
+    """
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Нужно название группы")
@@ -642,6 +668,39 @@ def admin_create_group(payload: dict = Body(...),
     existing = db.get(Group, gid)
     if existing is not None and not existing.deleted:
         raise HTTPException(status_code=409, detail="Группа с таким названием уже есть")
+
+    cfg = W.load_config(db)
+    ty, ts = W.current_term(cfg)
+    enrollment_year = payload.get("enrollment_year")
+    course = payload.get("course")
+    try:
+        if enrollment_year not in (None, ""):
+            enrollment_year = int(enrollment_year)
+        elif course not in (None, ""):
+            enrollment_year = W.study_hours.enrollment_year_for_course(int(course), ty, ts)
+        else:
+            enrollment_year = None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="Курс и год поступления должны быть числами")
+    #⚠️ Границу ставим НА СЕРВЕРЕ, а не только в форме: та же ручка доступна из десктопа,
+    #из офлайн-очереди и просто curl'ом. Курс 0 давал год поступления «в будущем», а от
+    #него `group_course` возвращает None — у группы навсегда «курс неизвестен», и ни одной
+    #ошибки при этом не показывается. Верхняя граница щедрая (8): справочника длительности
+    #у нас нет, и запрещать шестилетнюю программу мы не вправе.
+    if course not in (None, "") :
+        try:
+            if not 1 <= int(course) <= 8:
+                raise HTTPException(status_code=400, detail="Курс бывает от 1 до 8")
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Курс должен быть числом")
+    if enrollment_year is not None and not (1990 <= int(enrollment_year) <= 2100):
+        raise HTTPException(status_code=400, detail="Год поступления вне разумных границ")
+    #Курс считаем ОТ ГОДА даже когда его прислали: два числа об одном и том же обязаны
+    #сойтись, и расходиться им нельзя — иначе у группы два разных курса на разных экранах.
+    course_now = (W.study_hours.course_and_semester(enrollment_year, ty, ts)[0]
+                  if enrollment_year else None)
+
     row = existing or Group(id=gid)
     if existing is None:
         db.add(row)
@@ -649,11 +708,37 @@ def admin_create_group(payload: dict = Body(...),
     row.subjects = payload.get("subjects") or []
     if "category" in payload:
         row.category = _norm_category(payload.get("category"))
+    if enrollment_year:
+        row.enrollment_year = enrollment_year
+        row.last_course = course_now
+        row.last_course_year = ty
+    specialty_code = (payload.get("specialty_code") or "").strip()
+    if specialty_code:
+        row.specialty_code = specialty_code
     row.updated_at = _now_iso()
     row.deleted = False
     db.commit()
-    audit.log(db, actor=_admin.login, role="admin", action="group.create", target=name)
-    return {"ok": True, "name": name, "category": row.category or "college"}
+
+    #Программа обучения — тем же кодом, что и ручной импорт плана: вторая его копия здесь
+    #разошлась бы с первой на первой же правке парсера.
+    plan_error = ""
+    subjects_added = 0
+    if specialty_code and enrollment_year:
+        try:
+            out = admin_import_esstu({"group": name, "specialty_code": specialty_code,
+                                      "enrollment_year": enrollment_year},
+                                     _admin=_admin, db=db)
+            subjects_added = len(out.get("subjects") or [])
+        except HTTPException as e:
+            plan_error = str(e.detail)
+        except Exception as e:                                      # noqa: BLE001
+            plan_error = f"учебный план не подтянулся: {e}"
+
+    audit.log(db, actor=_admin.login, role="admin", action="group.create", target=name,
+              detail=f"курс {course_now}, год поступления {enrollment_year}")
+    return {"ok": True, "name": name, "category": row.category or "college",
+            "course": course_now, "enrollment_year": enrollment_year,
+            "subjects_added": subjects_added, "plan_error": plan_error}
 
 
 # ── 🔒 ЗАЩИТА ОТ ПОРЧИ ДАННЫХ ПОРТАЛОМ (04.09.2026, требование Ярослава) ────────────

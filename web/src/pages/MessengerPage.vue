@@ -5,6 +5,7 @@
 //   C — переписка СПРАВА (лента + композер)                  [ChatThread]
 // Транспорт Фазы 2 — опрос (store.startPolling); WebSocket добавим отдельной фазой.
 import { onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import { useEasterStore } from '@/stores/easterEggs'
 import { useMessengerStore } from '@/stores/messenger'
 import ChatList from '@/components/messenger/ChatList.vue'
@@ -23,7 +24,22 @@ const embed = (() => {
   } catch { return false }
 })()
 
-onMounted(() => { m.loadChats(); m.startPolling() })
+// Ссылка на сообщение (`?chat=…&msg=…`) — пункт «Копировать ссылку на сообщение» в меню
+// по выделению. Открываем беседу и просим ленту перемотаться к строке.
+//
+// ⚠️ Ссылка ОТНОСИТЕЛЬНАЯ и ведёт внутрь кабинета: беседа всё равно откроется только
+// участнику, а неучастнику сервер ответит 403. То есть ссылка — удобство навигации, а
+// не способ поделиться перепиской.
+//
+// ⚠️ Сначала СПИСОК чатов, потом переход: `openById` берёт из него заголовок, чтобы шапка
+// не мигнула пустой. Отказ загрузки списка переходу не мешает.
+const route = useRoute()
+onMounted(async () => {
+  await m.loadChats().catch(() => {})
+  m.startPolling()
+  const conv = String(route.query.chat || '')
+  if (conv) m.openById(conv, Number(route.query.msg || 0))
+})
 onBeforeUnmount(() => { m.stopPolling() })
 // Hotline Miami при входе во вкладку «Сообщения». Бросок серверный, как и везде.
 const easter = useEasterStore()

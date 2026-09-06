@@ -123,6 +123,22 @@ def test_setup_cannot_be_restarted_while_the_factor_is_on(client):
     assert r.status_code == 409
 
 
+
+# ⚠️ ВХОД С ФАКТОРОМ ПРОВЕРЯЕМ НА ПРЕПОДАВАТЕЛЕ, А НЕ НА АДМИНИСТРАТОРЕ (05.09.2026).
+# У роли `admin` второй фактор отключён целиком (решение Влада: аутентификатор живёт на
+# одном устройстве, а админ колледжа садится за разные машины). Механизм при этом
+# никуда не делся и обязан работать — просто проверять его надо на той роли, где он
+# действует. Оставить эти тесты на админе значило бы либо удалить проверку рабочего
+# механизма, либо «подогнать» её под новое поведение, не проверяя ничего.
+TEACHER_LOGIN, TEACHER_PASS = "mfateacher", "teacherpass1"
+
+
+def _teacher(client):
+    """Преподаватель + его заголовки. Фактор у этой роли действует."""
+    admin = make_admin(client)
+    return make_teacher(client, admin, login=TEACHER_LOGIN, password=TEACHER_PASS)
+
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Вход
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -133,10 +149,10 @@ def test_login_with_the_factor_gives_no_token_at_all(client):
     Не «токен с пометкой», которую пришлось бы проверять в двух сотнях ручек, —
     а именно отсутствие токена.
     """
-    headers = make_admin(client)
+    headers = _teacher(client)
     _enable_mfa(client, headers)
 
-    r = client.post("/auth/login", json={"login": "admin", "password": "adminpass1"})
+    r = client.post("/auth/login", json={"login": TEACHER_LOGIN, "password": TEACHER_PASS})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("mfa_required") is True
@@ -147,10 +163,10 @@ def test_login_with_the_factor_gives_no_token_at_all(client):
 
 def test_the_challenge_is_not_a_working_access_token(client):
     """🔒 Подпись у него та же — годиться как пропуск он не должен."""
-    headers = make_admin(client)
+    headers = _teacher(client)
     _enable_mfa(client, headers)
     challenge = client.post("/auth/login",
-                            json={"login": "admin", "password": "adminpass1"}).json()["challenge"]
+                            json={"login": TEACHER_LOGIN, "password": TEACHER_PASS}).json()["challenge"]
 
     #⚠️ Спрашиваем НАСТОЯЩУЮ защищённую ручку. Первая версия теста стучалась в «/me»,
     #а такого маршрута нет — запрос уходил в SPA-заглушку и возвращал 200 (страницу).
@@ -160,10 +176,10 @@ def test_the_challenge_is_not_a_working_access_token(client):
 
 
 def test_correct_code_completes_the_login(client):
-    headers = make_admin(client)
+    headers = _teacher(client)
     secret, _codes = _enable_mfa(client, headers)
     challenge = client.post("/auth/login",
-                            json={"login": "admin", "password": "adminpass1"}).json()["challenge"]
+                            json={"login": TEACHER_LOGIN, "password": TEACHER_PASS}).json()["challenge"]
 
     r = client.post("/auth/mfa/verify", json={"challenge": challenge, "code": _next_code(secret)})
     assert r.status_code == 200, r.text
@@ -171,22 +187,22 @@ def test_correct_code_completes_the_login(client):
 
 
 def test_wrong_code_does_not_complete_the_login(client):
-    headers = make_admin(client)
+    headers = _teacher(client)
     _enable_mfa(client, headers)
     challenge = client.post("/auth/login",
-                            json={"login": "admin", "password": "adminpass1"}).json()["challenge"]
+                            json={"login": TEACHER_LOGIN, "password": TEACHER_PASS}).json()["challenge"]
     r = client.post("/auth/mfa/verify", json={"challenge": challenge, "code": "000000"})
     assert r.status_code == 400
 
 
 def test_a_recovery_code_works_exactly_once(client):
     """Потерянный телефон — это то, ради чего коды и заведены."""
-    headers = make_admin(client)
+    headers = _teacher(client)
     _secret, codes = _enable_mfa(client, headers)
 
     def login_challenge():
         return client.post("/auth/login",
-                           json={"login": "admin", "password": "adminpass1"}).json()["challenge"]
+                           json={"login": TEACHER_LOGIN, "password": TEACHER_PASS}).json()["challenge"]
 
     r = client.post("/auth/mfa/verify", json={"challenge": login_challenge(), "code": codes[0]})
     assert r.status_code == 200, r.text
@@ -226,28 +242,46 @@ def as_production(monkeypatch):
     monkeypatch.setattr(config, "IS_PROD", True)
 
 
-def test_admin_without_the_factor_gets_nothing_on_production(client, as_production):
-    """🔒 Пароль администратора — единственная дверь к ПДн всего колледжа."""
+def test_admin_works_on_production_without_any_factor(client, as_production):
+    """🔥 ТРЕБОВАНИЕ СНЯТО (05.09.2026, решение Влада).
+
+    Здесь стояло обратное: администратор без фактора получал 403 и не мог ничего.
+    Живая жалоба — «при входе в админку она не работает, для этого нужен
+    аутентификатор». Причина, по которой правило не работало в жизни: аутентификатор
+    привязан к ОДНОМУ устройству, а админ колледжа садится за разные компьютеры.
+
+    ⚠️ Цена названа честно: административный доступ снова держится на одном пароле.
+    Тест закрепляет именно РЕШЕНИЕ, а не удобство: вернётся `required_for` — покраснеет.
+    """
     headers = make_admin(client)
     r = client.get("/web/admin/groups", headers=headers)
-    assert r.status_code == 403, r.text
-    assert r.headers.get("X-Gb-Reason") == "mfa_setup_required", (
-        "отказ обязан быть машиночитаемым: иначе интерфейс покажет «нет прав», и "
-        "администратор пойдёт искать, кто отобрал доступ, вместо настройки за минуту"
-    )
+    assert r.status_code == 200, r.text
+    assert r.headers.get("X-Gb-Reason") is None
 
 
-def test_the_lock_still_has_a_door(client, as_production):
-    """Настроить фактор администратор обязан мочь — иначе это замок без двери."""
+def test_admin_with_a_configured_factor_is_not_asked_for_a_code(client, as_production):
+    """🔥 Снять только обязательность БЫЛО БЫ МАЛО.
+
+    Администратор, у которого фактор уже заведён, продолжал бы получать запрос кода на
+    каждом входе — то есть остался бы заперт ровно как прежде. Поэтому у роли `admin`
+    фактор не действует и после настройки.
+    """
+    headers = make_admin(client)
+    _enable_mfa(client, headers)
+
+    r = client.post("/auth/login", json={"login": "admin", "password": "adminpass1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("mfa_required") is not True, "у админа снова спрашивают код"
+    assert body.get("access_token"), "вход не выдал токен"
+    assert client.get("/web/admin/groups", headers=headers).status_code == 200
+
+
+def test_the_factor_is_still_available_to_anyone_who_wants_it(client, as_production):
+    """Снят замок, а не дверь: завести фактор по-прежнему можно."""
     headers = make_admin(client)
     assert client.post("/auth/mfa/setup", headers=headers).status_code == 200
     assert client.get("/auth/mfa/status", headers=headers).status_code == 200
-
-
-def test_admin_with_the_factor_works_normally(client, as_production):
-    headers = make_admin(client)
-    _enable_mfa(client, headers)
-    assert client.get("/web/admin/groups", headers=headers).status_code == 200
 
 
 def test_the_requirement_does_not_apply_to_the_local_desktop_server(client, monkeypatch):
@@ -293,12 +327,19 @@ def test_admin_without_the_factor_is_stopped_everywhere_not_just_in_admin_sectio
     попадает в получатели обращений. Через `require_admin` эти ветки не проходят
     вовсе — то есть админ без второго фактора сохранял бы часть полномочий по
     одному паролю, а докстринг утверждал бы обратное.
+
+    ⚠️ ТРЕБОВАНИЕ СНЯТО 05.09.2026, и тест переписан, а не удалён. Само устройство
+    проверки — в `get_current_user`, а не в `require_admin` — осталось верным и важным:
+    вернётся обязательность (для любой роли), и она обязана действовать ВЕЗДЕ, включая
+    обычные ручки. Здесь закрепляется, что сейчас админа не останавливает ничто.
     """
     headers = make_admin(client)
-    #Обычная, НЕ административная ручка: раньше она была бы доступна.
+    #Обычная, НЕ административная ручка.
     r = client.get("/web/messenger/chats", headers=headers)
-    assert r.status_code == 403, r.text
-    assert r.headers.get("X-Gb-Reason") == "mfa_setup_required"
+    assert r.status_code == 200, r.text
+    assert r.headers.get("X-Gb-Reason") is None
+    #И административная — тоже открыта.
+    assert client.get("/web/admin/groups", headers=headers).status_code == 200
 
 
 def test_the_allowed_list_is_exactly_enough_to_set_the_factor_up(client, as_production):
@@ -311,3 +352,62 @@ def test_the_allowed_list_is_exactly_enough_to_set_the_factor_up(client, as_prod
     for path in ("/auth/mfa/status", "/me/prefs"):
         assert client.get(path, headers=headers).status_code == 200, path
     assert client.post("/auth/mfa/setup", headers=headers).status_code == 200
+
+
+def test_admin_with_a_configured_factor_can_still_reset_his_password(client):
+    """🔥 ЗАМКОВ БЫЛО ТРИ, А СНЯЛИ ДВА (нашёл Полковник 06.09.2026).
+
+    `mfa.guard_action` спрашивал таблицу НАПРЯМУЮ (`row_for` + `confirmed_at`) и решение
+    «действует ли фактор» принимал МИМО `is_active`. Итог: администратор, снятый с фактора
+    на входе и на длине сессии, оставался заперт ровно в той двери, куда попадает, потеряв
+    доступ, — на восстановлении пароля. И это тот же самый человек из жалобы Влада, у
+    которого аутентификатор остался на другом устройстве.
+
+    ⚠️ Обратный ход: вернуть `guard_action` к прямому `row_for` — тест краснеет (401 с
+    `X-Gb-Reason: mfa_required` вместо успешного сброса).
+    """
+    from app.models import User
+    from app.routers import mfa
+
+    admin = make_admin(client)
+    #Заводим и ПОДТВЕРЖДАЕМ фактор администратору — состояние из жалобы.
+    secret = client.post("/auth/mfa/setup", headers=admin).json()["secret"]
+    assert client.post("/auth/mfa/confirm", json={"code": totp.code(secret)},
+                       headers=admin).status_code == 200
+
+    db = SessionLocal()
+    try:
+        row = db.query(User).filter(User.role == "admin").first()
+        assert mfa.row_for(db, row.id).confirmed_at, "фактор обязан быть заведён"
+        #Сам механизм: для админа он больше не действует НИ В ОДНОМ потребителе.
+        assert mfa.is_active(db, row.id, "admin") is False
+        #И `guard_action` обязан пропускать БЕЗ кода — иначе дверь заперта.
+        mfa.guard_action(db, row, "", None, "тест")
+    finally:
+        db.close()
+
+
+def test_nobody_is_told_to_set_up_a_factor_while_nobody_is_required_to(client):
+    """🔎 ДВЕ ПОЛОВИНЫ ОДНОГО РЕШЕНИЯ ДЕРЖАТСЯ ВМЕСТЕ (06.09.2026).
+
+    Жалоба Влада «при входе в новый аккаунт открыто окно оверлея настроек» разбиралась
+    цепочкой: `deps.require_admin` отвечал 403 с `X-Gb-Reason: mfa_setup_required`,
+    `api/client.js` звал обработчик, а `App.vue` делал `router.push('/{role}/settings')`.
+    То есть новый администратор без аутентификатора попадал в настройки на ПЕРВОМ же
+    запросе — и это выглядело как «настройки открылись сами».
+
+    Обязательность снята, значит отказ больше не имеет права появляться НИ У КОГО. Но
+    половины живут в разных файлах: вернёт кто-нибудь `required_for` и не вспомнит про
+    клиентский обработчик — и оверлей вернётся вместе с ним, уже без жалобы и без
+    объяснения. Тест связывает их: пока никого не обязывают, сервер молчит.
+    """
+    from app.models import User as _User
+    from app.routers import mfa as _mfa
+
+    admin = make_admin(client)
+    for role in ("admin", "teacher", "student", "parent"):
+        assert _mfa.required_for(_User(id="x", role=role)) is False, role
+
+    r = client.get("/web/admin/groups", headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.headers.get("X-Gb-Reason") != "mfa_setup_required"

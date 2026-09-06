@@ -210,6 +210,49 @@ def message_read_by(mid: int, user: User = Depends(get_current_user), db: Sessio
                       for u in users]}
 
 
+#Сколько символов выделения храним у цитаты. Цитата — указатель на кусок разговора, а не
+#его копия: длинную клиент всё равно обрезает многоточием, а в базе она лежала бы вторым
+#экземпляром чужого сообщения.
+_MAX_QUOTE_CHARS = 300
+
+
+def _clean_quote(raw, original: Message) -> str:
+    """Проверить и подрезать выделенный фрагмент цитаты. Пусто — обычный ответ.
+
+    🔒 ГЛАВНОЕ ЗДЕСЬ — ПРОВЕРКА ПРИНАДЛЕЖНОСТИ. Фрагмент обязан реально встречаться в
+    теле оригинала. Без неё в цитату вписывались бы слова, которых собеседник не писал, и
+    выглядели бы они как его собственные: подделка, заметная только тому, кто пойдёт
+    сверять исходное сообщение — а к нему-то цитата и ведёт, то есть проверять её пошли
+    бы по ссылке, которую поставил подделыватель.
+
+    ⚠️ Сравниваем по НОРМАЛИЗОВАННЫМ пробелам: выделение мышью в браузере переносы строк
+    внутри абзаца отдаёт пробелами, и точное вхождение не совпало бы у совершенно
+    честного выделения через две строки.
+
+    ⚠️ Цитата у СИСТЕМНОГО сообщения не имеет смысла (его тело — шаблон «событиеаргу-
+    менты», человек такого не писал), поэтому там её просто нет.
+    """
+    text = (raw or "")
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    #🔥 ОРИГИНАЛ, УЖЕ УДАЛЁННЫЙ «У ВСЕХ», ЦИТИРОВАТЬ НЕЛЬЗЯ (нашёл Полковник 06.09.2026).
+    #Тумбстоун тело НЕ стирает — оно остаётся в строке ради модерации, — поэтому проверка
+    #принадлежности фрагмента проходила успешно, и цитата удалённого сообщения ложилась в
+    #базу. Гашение при выдаче (`_blank_quotes_of_deleted`) её потом убирало из ленты, но
+    #строка уже существовала и уезжала в пути, идущие мимо: превью последнего сообщения в
+    #списке чатов и очередь модерации. Правило прежнее: не пускать, а не подчищать.
+    if getattr(original, "deleted_at", ""):
+        return ""
+    if (getattr(original, "kind", "") or "text") == "system":
+        return ""
+    text = text.strip()[:_MAX_QUOTE_CHARS]
+    def _flat(v: str) -> str:
+        return " ".join((v or "").split())
+    if _flat(text) not in _flat(original.body or ""):
+        return ""
+    return text
+
+
 # ── Отправка ─────────────────────────────────────────────────────────────────────────
 @router.post("/chats/{conv_id}/messages")
 def send_message(conv_id: str, payload: dict = Body(...),
@@ -242,11 +285,14 @@ def send_message(conv_id: str, payload: dict = Body(...),
     elif len(body) > _MAX_MSG_CHARS:
         body = body[:_MAX_MSG_CHARS]
     reply_to = int(payload.get("reply_to_id") or 0)
+    reply_quote = ""
     if reply_to:
         ok = (db.query(Message)
               .filter(Message.id == reply_to, Message.conversation_id == conv_id).first())
         if ok is None:
             reply_to = 0                     #ответ на чужое/несуществующее — игнорируем связь
+        else:
+            reply_quote = _clean_quote(payload.get("reply_quote"), ok)
 
     #§D10: идемпотентность. Повторный POST с тем же client_nonce (ретрай при обрыве сети)
     #возвращает уже созданное сообщение, а не плодит дубль.
@@ -316,7 +362,8 @@ def send_message(conv_id: str, payload: dict = Body(...),
         att.orphan_at = ""          #ссылка появилась — сиротой больше не считается
 
     m = Message(conversation_id=conv_id, sender_id=user.id, body=body,
-                created_at=_now(), reply_to_id=reply_to, mentions=mentions,
+                created_at=_now(), reply_to_id=reply_to, reply_quote=reply_quote,
+                mentions=mentions,
                 kind=kind, attachment_id=att_id,
                 body_format="plain" if is_gif else "markdown", client_nonce=nonce)
     db.add(m)

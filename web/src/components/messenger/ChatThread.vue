@@ -23,6 +23,9 @@ import { isNativeApp } from '@/api/server'
 import { extractGifLinks } from '@/utils/gifEmbed'
 import { formatSystemMessage } from '@/utils/messagePreview'
 import { copyText } from '@/utils/clipboard'
+import { highlightIn } from '@/utils/highlightFragment'
+import { markupSpans, toggleWrap, selectionWrapped } from '@/utils/markupSpans'
+import { useRoute } from 'vue-router'
 import { useConfirm } from '@/composables/useConfirm'
 import MessageActionsOverlay from './MessageActionsOverlay.vue'
 import ReportDialog from './ReportDialog.vue'
@@ -36,6 +39,7 @@ import ActivityCard from '@/components/activity/ActivityCard.vue'
 import BoardCard from '@/components/activity/BoardCard.vue'
 import TranslateDialog from './TranslateDialog.vue'
 import GifPicker from './GifPicker.vue'
+import QuickReplyWheel from './QuickReplyWheel.vue'
 import FilePreview from './FilePreview.vue'
 import { humanSize } from '@/utils/docPreview'
 import Avatar from '@/components/ui/Avatar.vue'
@@ -55,6 +59,11 @@ const m = useMessengerStore()
 const tr = useTranslateStore()
 const showTranslate = ref(false)
 const showGifPicker = ref(false)
+// Меню «+» слева от поля ввода: три категории вместо четырёх постоянных кнопок над ним.
+const plusMenu = ref(false)
+// Форма «свой шаблон» — отдельно от колеса выбора: колесо закрывается по первому же
+// выбору, а ввод текста это обратное действие (см. QuickReplyWheel.vue).
+const showTemplateForm = ref(false)
 
 // ── Вложение файла ─────────────────────────────────────────────────────────────────
 // ⚠️ Файл сначала ПОКАЗЫВАЕМ, потом отправляем. Мессенджер, отправляющий документ по
@@ -110,7 +119,7 @@ const auth = useAuthStore()
 const gif = useGifStore()
 const tts = useTtsStore()
 const { confirm } = useConfirm()
-const { activeId, activePeer, messages, loadingMessages, loadingOlder, hasOlder, sending, replyTo, pinned, selectionMode, selectedIds, isModeration, activeInfo, peerTyping, notice, activeChat, activeKind, mascotCooldown, templates, activeThread, searchResults, searching, searchExpanded } = storeToRefs(m)
+const { activeId, activePeer, messages, loadingMessages, loadingOlder, hasOlder, sending, replyTo, replyQuote, pinned, selectionMode, selectedIds, isModeration, activeInfo, peerTyping, notice, activeChat, activeKind, mascotCooldown, templates, activeThread, searchResults, searching, searchExpanded } = storeToRefs(m)
 
 // ── Плавное появление НОВЫХ сообщений ────────────────────────────────────────────
 // ⚠️ Именно новых. Анимировать всю ленту при открытии беседы нельзя: пятьдесят
@@ -179,7 +188,10 @@ const scroller = ref(null)
 const composer = ref(null)
 
 // Оверлей действий, модалки.
-const overlay = ref({ open: false, message: null, x: 0, y: 0 })
+// `selection` — ВЫДЕЛЕННЫЙ внутри сообщения текст на момент открытия меню. Снимок, а не
+// ссылка на живое выделение: клик по пункту меню выделение снимает, и к моменту, когда
+// действие выполняется, спрашивать браузер уже поздно.
+const overlay = ref({ open: false, message: null, x: 0, y: 0, selection: '' })
 const reportMsg = ref(null)                 // сообщение, на которое жалуемся
 const openReportOverlay = ref(null)         // §12: id открытого отчёта куратора (или null)
 const activity = useActivityStore()         // кнопка активностей в шапке + значок «новая»
@@ -309,6 +321,45 @@ function fmtTime(iso) {
 function quoted(id) {
   const src = messages.value.find(x => x.id === id)
   return src ? (src.deleted ? locale.t('chatThread.deleted', 'Сообщение удалено') : src.body) : ''
+}
+
+// ── Цитата в пузыре (как в Telegram): имя автора + процитированный кусок ───────────────
+// Кусок берём из `reply_quote` — его прислал СЕРВЕР, проверив, что он реально есть в
+// оригинале. Пусто (обычный ответ) — показываем начало исходного сообщения, как было.
+//
+// ⚠️ Имя автора обязательно: в группе без него цитата выглядит как чей угодно текст, и
+// смысл ответа меняется на противоположный, когда рядом спорят двое.
+function quoteAuthor(id) {
+  const src = messages.value.find(x => x.id === id)
+  if (!src) return ''
+  if (src.mine) return locale.t('chatThread.you', 'Вы')
+  return senderName(src) || ''
+}
+function quoteText(msg) {
+  if (msg.reply_quote) return msg.reply_quote
+  return quoted(msg.reply_to_id)
+}
+
+// Клик по цитате: перемотать к оригиналу и подсветить ИМЕННО процитированный кусок.
+//
+// ⚠️ Оригинал может быть выше подгруженной страницы (лента отдаёт по 50). Тогда честно
+// говорим, что дальше не листали, — молчаливое «ничего не произошло» человек читает как
+// поломку и жмёт ещё раз.
+async function jumpToQuoted(msg) {
+  const id = msg.reply_to_id
+  if (!id) return
+  const el = document.getElementById(`gb-msg-${id}`)
+  if (!el) {
+    m.setNotice(locale.t('chatThread.quoteNotLoaded', 'Исходное сообщение ещё не загружено — пролистайте историю выше.'))
+    return
+  }
+  jumpTo(id)
+  await nextTick()
+  const body = el.querySelector('.msg-body')
+  const piece = (msg.reply_quote || '').trim()
+  //Нашли кусок — подсвечиваем его; не нашли (оригинал отредактировали) — подсвечиваем
+  //сообщение целиком: перемотка всё равно привела туда, куда обещала.
+  if (!piece || !body || !highlightIn(body, piece)) flashMessage(id)
 }
 
 // §D6: системные сообщения (вступил/вышел/переименовано/закреп) — сервер шлёт шаблон
@@ -460,20 +511,119 @@ function fmtFull(iso) {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(BCP47[locale.active] || 'ru-RU', { dateStyle: 'short', timeStyle: 'short' })
 }
 
-// §D1: тулбар форматирования — оборачивает ВЫДЕЛЕНИЕ в textarea нужными символами
-// (или вставляет пару символов на позицию курсора, если ничего не выделено).
-function wrapSelection(before, after = before) {
+// ── §D1 → облачко форматирования над выделением (05.09.2026) ────────────────────────
+// Просьба Влада: «меню над сообщением урезать максимально… если написали текст в ячейке и
+// выделили — вылезет его форматирование… над выделенным текстом выйдет квадратное
+// облачко с кнопками, при нажатии добавит символы».
+//
+// Постоянный ряд B/I/U/S над полем ввода убран: он занимал строку у КАЖДОГО, кто просто
+// пишет сообщение, а нужен ровно в тот момент, когда текст выделен. Клавиатурные
+// сокращения (Ctrl+B/I/U) остались — они и были главным способом.
+//
+// 🔥 ПОЧЕМУ РЯДОМ С ПОЛЕМ ЖИВЁТ ЗЕРКАЛО. Приглушить символы разметки прямо в `<textarea>`
+// нельзя в принципе — покрасить часть её содержимого браузер не даёт. Поэтому текст поля
+// делается прозрачным (виден только курсор), а под ним лежит `div`, рисующий ТОТ ЖЕ текст
+// с приглушёнными парными обёртками — как в Discord (снимок 07 задания). Разбор на куски
+// — чистая функция `utils/markupSpans.js`, проверяемая числами; зеркало отвечает только
+// за отрисовку.
+//
+// ⚠️ Зеркало обязано совпадать с полем ПО ВСЕМ метрикам (шрифт, размер, отступы, перенос
+// слов, прокрутка) — иначе приглушённые символы разъедутся с настоящими, и это будет
+// выглядеть как рябь. Отсюда одинаковые классы и синхронизация `scrollTop`.
+const mirror = ref(null)
+const fmtBubble = ref({ open: false, left: 0, top: 0, start: 0, end: 0 })
+const draftSpans = computed(() => markupSpans(draft.value))
+
+// Символы, которые предлагает облачко. Ровно те, что понимает `markdownLite` — обещать
+// форматирование, которого не будет в отправленном сообщении, нельзя.
+const FMT_BUTTONS = computed(() => [
+  { marker: '**', icon: Bold, title: locale.t('chatThread.fmt.bold', 'Жирный (Ctrl+B)') },
+  { marker: '*', icon: Italic, title: locale.t('chatThread.fmt.italic', 'Курсив (Ctrl+I)') },
+  { marker: '__', icon: Underline, title: locale.t('chatThread.fmt.underline', 'Подчёркнутый (Ctrl+U)') },
+  { marker: '~~', icon: Strikethrough, title: locale.t('chatThread.fmt.strike', 'Зачёркнутый') },
+  { marker: '`', icon: Code, title: locale.t('chatThread.fmt.code', 'Код') },
+])
+
+// Узел зеркала и смещение внутри него для позиции `pos` в тексте. Зеркало содержит РОВНО
+// тот же текст, что поле, — просто разложенный по span'ам, — поэтому обход текстовых
+// узлов даёт точное соответствие.
+function mirrorPoint(pos) {
+  const root = mirror.value
+  if (!root) return null
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let seen = 0
+  let node = walk.nextNode()
+  while (node) {
+    const len = node.nodeValue.length
+    if (seen + len >= pos) return { node, offset: pos - seen }
+    seen += len
+    node = walk.nextNode()
+  }
+  return node ? { node, offset: node.nodeValue.length } : null
+}
+
+function updateFmtBubble() {
+  const el = composer.value
+  const wrap = el?.parentElement
+  if (!el || !wrap) { fmtBubble.value.open = false; return }
+  const start = el.selectionStart ?? 0
+  const end = el.selectionEnd ?? 0
+  if (start === end) { fmtBubble.value.open = false; return }
+  const a = mirrorPoint(start)
+  const b = mirrorPoint(end)
+  if (!a || !b) { fmtBubble.value.open = false; return }
+  try {
+    const range = document.createRange()
+    range.setStart(a.node, a.offset)
+    range.setEnd(b.node, b.offset)
+    const r = range.getBoundingClientRect()
+    const box = wrap.getBoundingClientRect()
+    //Кламп по ширине обёртки: у выделения в самом конце длинной строки облачко иначе
+    //уезжает за правый край — тот же дефект, что чинили у меню сообщения, только мельче.
+    const half = 96
+    const left = Math.max(half, Math.min(r.left + r.width / 2 - box.left, box.width - half))
+    fmtBubble.value = { open: true, left, top: r.top - box.top - 8, start, end }
+  } catch { fmtBubble.value.open = false }
+}
+
+function applyFmt(marker) {
+  const { start, end } = fmtBubble.value
+  const res = toggleWrap(draft.value, start, end, marker)
+  draft.value = res.text
+  nextTick(() => {
+    const el = composer.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(res.start, res.end)
+    updateFmtBubble()
+  })
+}
+// Кнопка показывает СОСТОЯНИЕ, а не только действие: уже обёрнутый кусок она снимет.
+function fmtActive(marker) {
+  return selectionWrapped(draft.value, fmtBubble.value.start, fmtBubble.value.end, marker)
+}
+
+// §D1: клавиатурные сокращения — тот же переключатель, что у облачка. Раньше здесь была
+// своя вставка символов, и повторное нажатие давало `****текст****`: кнопка, которой
+// нельзя отменить саму себя.
+function wrapSelection(marker) {
   const el = composer.value
   if (!el) return
   const start = el.selectionStart ?? draft.value.length
   const end = el.selectionEnd ?? draft.value.length
-  const sel = draft.value.slice(start, end)
-  draft.value = draft.value.slice(0, start) + before + sel + after + draft.value.slice(end)
+  const res = toggleWrap(draft.value, start, end, marker)
+  draft.value = res.text
   nextTick(() => {
     el.focus()
-    const pos = sel ? end + before.length + after.length : start + before.length
-    el.setSelectionRange(pos, pos)
+    el.setSelectionRange(res.start, res.end)
+    updateFmtBubble()
   })
+}
+
+// Зеркало прокручиваем вслед за полем — иначе при длинном черновике приглушённые символы
+// останутся на месте, а настоящие уедут.
+function syncMirrorScroll() {
+  if (mirror.value && composer.value) mirror.value.scrollTop = composer.value.scrollTop
 }
 function onComposerKeydown(e) {
   if (e.ctrlKey || e.metaKey) {
@@ -702,9 +852,25 @@ let pressTimer = null
 let touchStart = null         // {x, y, msg} — начало касания
 let touchMoved = false        // был ли жест (тогда не считаем его тапом)
 
-function openMenu(msg, x, y) {
+// Что человек выделил ВНУТРИ этого сообщения. Пусто — обычное меню, не пусто —
+// «телеграмное» меню по выделению (см. utils/messageMenu.js).
+//
+// ⚠️ Проверяем, что выделение лежит ИМЕННО в этом пузыре. Без этого меню на одном
+// сообщении показывало бы цитату из соседнего — выделение живёт на всей странице, а не
+// внутри элемента, по которому нажали.
+function selectionInside(el) {
+  try {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return ''
+    const range = sel.getRangeAt(0)
+    if (!el || !el.contains(range.commonAncestorContainer)) return ''
+    return String(sel).trim()
+  } catch { return '' }
+}
+
+function openMenu(msg, x, y, selection = '') {
   if (selectionMode.value) return
-  overlay.value = { open: true, message: msg, x, y }
+  overlay.value = { open: true, message: msg, x, y, selection }
 }
 
 // ЛКМ: только отметка в режиме выделения (меню сюда больше не привязано).
@@ -715,13 +881,13 @@ function onMessageClick(msg) {
 // ПКМ на ПК и долгое нажатие в мобильных браузерах (они шлют contextmenu сами).
 function onContextMenu(msg, e) {
   e.preventDefault()
-  openMenu(msg, e.clientX, e.clientY)
+  openMenu(msg, e.clientX, e.clientY, selectionInside(e.currentTarget))
 }
 
 function onTouchStart(msg, e) {
   const t = e.touches?.[0]
   if (!t) return
-  touchStart = { x: t.clientX, y: t.clientY, msg }
+  touchStart = { x: t.clientX, y: t.clientY, msg, el: e.currentTarget }
   touchMoved = false
   clearTimeout(pressTimer)
   // Свой таймер долгого нажатия — в WebView приложения contextmenu приходит не всегда.
@@ -731,7 +897,9 @@ function onTouchStart(msg, e) {
       //появления меню человек не знает, сколько держать. Это первый из двух случаев в
       //haptics.js — «палец действует вслепую».
       haptics.tap()
-      openMenu(msg, touchStart.x, touchStart.y)
+      //На телефоне выделение делают долгим нажатием ЖЕ — к моменту нашего таймера оно
+      //уже есть, если человек выделял. Спрашиваем тот же элемент, что и на ПК.
+      openMenu(msg, touchStart.x, touchStart.y, selectionInside(touchStart.el))
     }
   }, LONG_PRESS_MS)
 }
@@ -770,8 +938,24 @@ function onTouchEnd() {
 
 async function onPick(action) {
   const msg = overlay.value.message
+  const picked = (overlay.value.selection || '').trim()
   if (!msg) return
   if (action === 'reply') { m.setReply(msg); await nextTick(); composer.value?.focus() }
+  //«Ответить с цитатой»: в ответ уезжает ВЫДЕЛЕННЫЙ кусок, а не всё сообщение. Сервер
+  //проверит, что кусок реально есть в оригинале (подделать чужие слова нельзя).
+  else if (action === 'quote-reply') {
+    m.setReply(msg, picked)
+    await nextTick()
+    composer.value?.focus()
+  }
+  else if (action === 'copy-selection') {
+    if (await copyText(picked)) flashCopied()
+    else m.setNotice(locale.t('chatThread.copyFailed', 'Не удалось скопировать: браузер не дал доступ к буферу обмена.'))
+  }
+  else if (action === 'copy-link') {
+    if (await copyText(messageLink(msg))) flashCopied()
+    else m.setNotice(locale.t('chatThread.copyFailed', 'Не удалось скопировать: браузер не дал доступ к буферу обмена.'))
+  }
   else if (action === 'pin') await m.setPinned(msg.id, true)
   else if (action === 'unpin') await m.setPinned(msg.id, false)
   //Копирование — через utils/clipboard (с фолбэком): в десктопном веб-виде и по HTTP
@@ -960,10 +1144,23 @@ const FIXED_QUICK_REPLIES = computed(() => [
 ])
 const showQuickReplies = ref(false)
 const newTemplateText = ref('')
+// Что показать в колесе: общий набор + личные шаблоны преподавателя. `removable` отличает
+// свои от общих — удалить можно только своё.
+const quickReplyItems = computed(() => [
+  ...FIXED_QUICK_REPLIES.value.map((text, i) => ({ id: `fix-${i}`, text, removable: false })),
+  ...(templates.value || []).map((t) => ({ id: `tpl-${t.id}`, tplId: t.id, text: t.body, removable: true })),
+])
 async function sendQuickReply(text) {
   showQuickReplies.value = false
   await m.send(text)
 }
+function onQuickReplyPick(item) { sendQuickReply(item.text) }
+function onQuickReplyRemove(item) { if (item.tplId) m.removeTemplate(item.tplId) }
+
+// Уход из поля гасит облачко. Кнопки самого облачка сюда не приводят: у них
+// `mousedown.prevent`, то есть фокус из поля не уходит вовсе — иначе выделение снималось
+// бы раньше, чем нажатие успевало сработать.
+function onComposerBlur() { fmtBubble.value.open = false }
 async function addTemplateFromInput() {
   const t = newTemplateText.value.trim()
   if (!t) return
@@ -1028,15 +1225,55 @@ function jumpTo(id) {
 const mentionMessageId = computed(() => activeChat.value?.mention_message_id || 0)
 const mentionLoud = computed(() => !!activeChat.value?.mention_loud)
 const flashMentionId = ref(0)
+// Подсветка на пару секунд: без неё после прокрутки непонятно, какое именно сообщение
+// искали — в плотной переписке центр экрана ни на что не указывает.
+// ⚠️ Имя общее (`flashMessage`), а не `flashMention`: подсветку зовут ТРИ пути — отметка,
+// переход по цитате и ссылка на сообщение, — и название, говорящее только про отметки,
+// соврало бы читателю уже на втором.
+function flashMessage(id) {
+  if (!id) return
+  flashMentionId.value = id
+  setTimeout(() => { if (flashMentionId.value === id) flashMentionId.value = 0 }, 2500)
+}
 function jumpToMention() {
   const id = mentionMessageId.value
   if (!id) return
   jumpTo(id)
-  // Подсветка на пару секунд: без неё после прокрутки непонятно, какое именно сообщение
-  // искали — в плотной переписке центр экрана ни на что не указывает.
-  flashMentionId.value = id
-  setTimeout(() => { if (flashMentionId.value === id) flashMentionId.value = 0 }, 2500)
+  flashMessage(id)
 }
+
+// ── Ссылка на сообщение (пункт меню по выделению) ────────────────────────────────────
+// ⚠️ Ссылка ОТНОСИТЕЛЬНАЯ и ведёт внутрь кабинета: беседа откроется только участнику, а
+// постороннему сервер ответит 403. Это навигация, а не способ поделиться перепиской.
+// ⚠️ В ЛИЧНОЙ переписке такого пункта нет вовсе (см. utils/messageMenu.js): «ссылка на
+// сообщение» из чата на двоих либо не откроется у третьего, либо откроет ему чужое.
+const route = useRoute()
+const canLink = computed(() => isGroupOrChannel.value)
+function messageLink(msg) {
+  const q = new URLSearchParams({ chat: activeId.value || '', msg: String(msg.id) })
+  return `${location.origin}${route.path}?${q.toString()}`
+}
+// Закреплять: в личном чате — оба, в канале — авторы, в группе — владелец/админ
+// (зеркалит серверный `_can_pin`; это подсказка, отказ всё равно даёт сервер).
+const canPin = computed(() => {
+  if (!isGroupOrChannel.value) return true
+  const role = activeInfo.value?.my_role
+  return isChannel.value
+    ? ['owner', 'admin', 'writer'].includes(role)
+    : ['owner', 'admin'].includes(role)
+})
+
+// Перемотка по ссылке `?msg=…`: стор просит, лента исполняет — к этому моменту сообщения
+// уже отрисованы, а `openById` вернул управление задолго до того.
+watch(() => [m.pendingJump, messages.value.length], async () => {
+  const id = m.pendingJump
+  if (!id) return
+  await nextTick()
+  if (!document.getElementById(`gb-msg-${id}`)) return   //ещё не догрузилась — ждём тика
+  jumpTo(id)
+  flashMessage(id)
+  m.pendingJump = 0
+}, { immediate: true })
 
 // «Избранное» — личный блокнот, а не переписка: ни собеседника, ни его статуса тут нет.
 const isSaved = computed(() => kind.value === 'saved')
@@ -1529,7 +1766,7 @@ function openActivities() {
                  @touchstart.passive="onTouchStart(msg, $event)"
                  @touchmove.passive="onTouchMove($event)"
                  @touchend="onTouchEnd" @touchcancel="onTouchEnd"
-                 class="max-w-[75%] select-none rounded-2xl px-3 py-1.5 text-left text-sm shadow-sm outline-none transition-shadow hover:shadow"
+                 class="max-w-[75%] select-text rounded-2xl px-3 py-1.5 text-left text-sm shadow-sm outline-none transition-shadow hover:shadow"
                  :class="[msg.mine ? 'bg-accent text-white' : 'bg-card text-text',
                           flashMentionId === msg.id ? 'ring-2 ring-accent' : '',
                           // Черновик (ещё не подтверждён сервером) слегка приглушён — тот же
@@ -1557,11 +1794,22 @@ function openActivities() {
               <div v-if="msg.forwarded_from" class="mb-0.5 text-[11px] italic opacity-80">
                 {{ locale.t('chatThread.forwardedFrom', { name: msg.forwarded_from }) }}
               </div>
-              <div v-if="msg.reply_to_id && quoted(msg.reply_to_id)"
-                   class="mb-1 border-l-2 pl-2 text-xs opacity-80"
-                   :class="msg.mine ? 'border-white/60' : 'border-accent'">
-                {{ quoted(msg.reply_to_id) }}
-              </div>
+              <!-- Цитата (как в Telegram): полоса, имя автора, процитированный кусок и
+                   значок кавычек справа. Нажатие ведёт к оригиналу и подсвечивает именно
+                   этот кусок (см. jumpToQuoted). Кнопка, а не div: по ней ЖМУТ. -->
+              <button v-if="msg.reply_to_id && quoteText(msg)" type="button"
+                      @click.stop="jumpToQuoted(msg)"
+                      class="mb-1 flex w-full items-start gap-1.5 rounded-md border-l-2 py-0.5 pl-2 pr-1 text-left text-xs transition-colors"
+                      :class="msg.mine ? 'border-white/60 hover:bg-white/10' : 'border-accent hover:bg-bg2'"
+                      :title="locale.t('chatThread.goToQuoted', 'Перейти к исходному сообщению')">
+                <span class="min-w-0 flex-1">
+                  <span v-if="quoteAuthor(msg.reply_to_id)" class="block font-semibold opacity-90">
+                    {{ quoteAuthor(msg.reply_to_id) }}
+                  </span>
+                  <span class="line-clamp-3 block opacity-80">{{ quoteText(msg) }}</span>
+                </span>
+                <Quote class="mt-0.5 size-3 shrink-0 opacity-60" />
+              </button>
               <span v-if="msg.deleted" class="italic opacity-70">{{ locale.t('chatThread.deleted', 'Сообщение удалено') }}</span>
               <!-- §ролей: игнор — ЛИЧНОЕ, не модерация; сервер текст отдаёт как обычно,
                    прячем и раскрываем на клиенте (клик по плейсхолдеру). -->
@@ -1791,52 +2039,15 @@ function openActivities() {
                    явно: иначе непонятно, что цепочка продолжится, и человек снова пишет
                    «/vector». -->
               <div class="text-[11px] font-semibold text-accent">
-                {{ replyingToVector ? locale.t('chatThread.askVectorNoPrefix', 'Вопрос Вектору — можно без «/vector»') : locale.t('chatThread.replyLabel', 'Ответ') }}
+                {{ replyingToVector ? locale.t('chatThread.askVectorNoPrefix', 'Вопрос Вектору — можно без «/vector»')
+                   : (replyQuote ? locale.t('chatThread.quoteLabel', 'Цитата') : locale.t('chatThread.replyLabel', 'Ответ')) }}
               </div>
-              <div class="truncate text-xs text-text3">{{ replyTo.deleted ? locale.t('chatThread.deleted', 'Сообщение удалено') : replyTo.body }}</div>
+              <!-- Что именно процитируется — видно ДО отправки. Выделение к этому моменту
+                   уже снято, и без показа человек отправлял бы ответ вслепую. -->
+              <div class="truncate text-xs text-text3">{{ replyTo.deleted ? locale.t('chatThread.deleted', 'Сообщение удалено') : (replyQuote || replyTo.body) }}</div>
             </div>
             <button type="button" @click="m.clearReply()" :aria-label="locale.t('chatThread.cancelReply', 'Отменить ответ')"
                     class="grid size-6 place-items-center rounded-md text-text3 hover:bg-bg2"><X class="size-4" /></button>
-          </div>
-          <!-- §D1: тулбар форматирования — оборачивает выделение в поле ввода. На мобиле
-               (узкий экран) раньше был скрыт целиком (`hidden sm:flex`) — сам факт скрытия
-               и был багом («нет кнопок над полем ввода»): вместе с ним пропадала и кнопка
-               GIF, которой на телефоне пользоваться ещё нужнее. Теперь виден всегда, а
-               узкий экран лечится горизонтальной прокруткой (`overflow-x-auto` + `shrink-0`
-               на каждой кнопке), а не скрытием функциональности. -->
-          <div class="flex items-center gap-0.5 overflow-x-auto border-b border-border px-2 py-1">
-            <button type="button" :title="locale.t('chatThread.fmt.bold', 'Жирный (Ctrl+B)')" @click="wrapSelection('**')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Bold class="size-4" /></button>
-            <button type="button" :title="locale.t('chatThread.fmt.italic', 'Курсив (Ctrl+I)')" @click="wrapSelection('*')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Italic class="size-4" /></button>
-            <button type="button" :title="locale.t('chatThread.fmt.underline', 'Подчёркнутый (Ctrl+U)')" @click="wrapSelection('__')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Underline class="size-4" /></button>
-            <button type="button" :title="locale.t('chatThread.fmt.strike', 'Зачёркнутый')" @click="wrapSelection('~~')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Strikethrough class="size-4" /></button>
-            <button type="button" :title="locale.t('chatThread.fmt.code', 'Код')" @click="wrapSelection('`')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Code class="size-4" /></button>
-            <button type="button" :title="locale.t('chatThread.fmt.quote', 'Цитата')" @click="wrapSelection('> ', '')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"><Quote class="size-4" /></button>
-            <span class="mx-1 h-4 w-px shrink-0 bg-border2" />
-            <!-- Быстрые ответы/шаблоны (docs/MESSENGER-ADDON-PLAN-GPT.md) — канонические
-                 фразы одним кликом, отправляются СРАЗУ. -->
-            <button type="button" :title="locale.t('chatThread.quickReplies', 'Быстрые ответы')" @click="showQuickReplies = !showQuickReplies"
-                    class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2 hover:text-text"
-                    :class="{ 'bg-bg2 text-accent': showQuickReplies }"><Zap class="size-4" /></button>
-            <span class="mx-1 h-4 w-px shrink-0 bg-border2" />
-            <!-- Настройки перевода — тоже здесь, рядом с полем ввода (как chat-bar-кнопка
-                 в better discord-translator), а не только в шапке беседы. -->
-            <button type="button" @click="showTranslate = true"
-                    :title="tr.enabled ? locale.t('chatThread.autoTranslateOn', 'Автоперевод включён') : locale.t('chatThread.configureTranslate', 'Настроить перевод')"
-                    class="grid size-7 shrink-0 place-items-center rounded-md hover:bg-bg2"
-                    :class="tr.enabled ? 'text-accent' : 'text-text3 hover:text-text'">
-              <Languages class="size-4" />
-            </button>
-            <!-- GIF (Klipy) — подпись буквами, а не иконкой: так и в Discord, «GIF» узнаваем
-                 без пояснения лучше любого символа. -->
-            <button type="button" title="GIF" @click="showGifPicker = !showGifPicker"
-                    class="grid h-7 shrink-0 place-items-center rounded-md px-1.5 text-[11px] font-extrabold tracking-tight hover:bg-bg2"
-                    :class="showGifPicker ? 'bg-bg2 text-accent' : 'text-text3 hover:text-text'">GIF</button>
           </div>
           <!-- Автодополнение слэш-команд (как в Telegram) — список + краткое пояснение. -->
           <div v-if="slashCandidates.length" class="border-b border-border p-1.5">
@@ -1861,26 +2072,18 @@ function openActivities() {
               <span class="shrink-0 text-[11px] text-text3">{{ meta(p) }}</span>
             </button>
           </div>
-          <!-- Панель быстрых ответов: фиксированный универсальный набор + (препод/админ)
-               личные шаблоны с возможностью добавить/удалить свой. -->
-          <div v-if="showQuickReplies" class="border-b border-border p-2">
-            <div class="flex flex-wrap gap-1.5">
-              <button v-for="txt in FIXED_QUICK_REPLIES" :key="txt" type="button" @click="sendQuickReply(txt)"
-                      class="rounded-full border border-border2 px-2.5 py-1 text-xs text-text hover:bg-bg2">{{ txt }}</button>
-              <button v-for="t in templates" :key="t.id" type="button" @click="sendQuickReply(t.body)"
-                      class="group flex items-center gap-1 rounded-full border border-border2 px-2.5 py-1 text-xs text-text hover:bg-bg2">
-                {{ t.body }}
-                <span v-if="canManageTemplates" role="button" tabindex="0" @click.stop="m.removeTemplate(t.id)"
-                      class="text-text3 opacity-0 hover:text-red group-hover:opacity-100">×</span>
-              </button>
-            </div>
-            <form v-if="canManageTemplates" class="mt-1.5 flex items-center gap-1.5" @submit.prevent="addTemplateFromInput">
-              <input v-model="newTemplateText" :placeholder="locale.t('chatThread.customTemplatePlaceholder', 'Свой шаблон (напр. «Работа принята»)…')"
-                     class="h-7 min-w-0 flex-1 rounded-md border border-border2 bg-card2 px-2 text-xs text-text outline-none focus:border-accent" />
-              <button type="submit" :disabled="!newTemplateText.trim()" :aria-label="locale.t('chatThread.addTemplate', 'Добавить шаблон')"
-                      class="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-white disabled:opacity-40"><Plus class="size-3.5" /></button>
-            </form>
-          </div>
+          <!-- Форма добавления личного шаблона (препод/админ). Сам ВЫБОР фразы уехал в
+               колесо (QuickReplyWheel), а заводить шаблон там негде: колесо закрывается
+               по первому же выбору, а ввод текста — обратное действие. -->
+          <form v-if="showTemplateForm && canManageTemplates" class="flex items-center gap-1.5 border-b border-border p-2"
+                @submit.prevent="addTemplateFromInput">
+            <input v-model="newTemplateText" :placeholder="locale.t('chatThread.customTemplatePlaceholder', 'Свой шаблон (напр. «Работа принята»)…')"
+                   class="h-7 min-w-0 flex-1 rounded-md border border-border2 bg-card2 px-2 text-xs text-text outline-none focus:border-accent" />
+            <button type="submit" :disabled="!newTemplateText.trim()" :aria-label="locale.t('chatThread.addTemplate', 'Добавить шаблон')"
+                    class="grid size-7 shrink-0 place-items-center rounded-md bg-accent text-white disabled:opacity-40"><Plus class="size-3.5" /></button>
+            <button type="button" class="grid size-7 shrink-0 place-items-center rounded-md text-text3 hover:bg-bg2"
+                    :aria-label="locale.t('common.cancel')" @click="showTemplateForm = false"><X class="size-3.5" /></button>
+          </form>
           <!-- Выбранный файл: показываем ДО отправки, с возможностью открыть и передумать. -->
           <div v-if="pendingFile" class="mx-2.5 mb-1 flex items-center gap-2 rounded-lg border border-border2 bg-card2 px-2.5 py-1.5">
             <Paperclip class="size-4 shrink-0 text-text3" />
@@ -1894,24 +2097,78 @@ function openActivities() {
                     :aria-label="locale.t('common.remove', 'Убрать')" @click="pendingFile = null">✕</button>
           </div>
 
-          <form class="flex items-end gap-2 p-2.5" @submit.prevent="pendingFile ? sendPendingFile() : submit()">
-            <!-- 🔥 Кнопка прикрепления СЛЕВА от поля (просьба Влада 25.08.2026). Сам файл
-                 через наш сервер не проходит: браузер кладёт его прямо в хранилище по
-                 подписанной ссылке — см. stores/messenger.js::sendFile. -->
+          <form class="relative flex items-end gap-2 p-2.5" @submit.prevent="pendingFile ? sendPendingFile() : submit()">
+            <!-- 🔥 ОДНА КНОПКА «+» ВМЕСТО ЧЕТЫРЁХ (просьба Влада 05.09.2026: «гифки,
+                 быстрые ответы, картинки и файлы ужать, сделай на месте скрепки знак „+“,
+                 при нажатии вылезут категории»). Постоянный ряд кнопок занимал строку у
+                 каждого, кто просто пишет сообщение; здесь их три, и они рядом с полем.
+                 Сам файл через наш сервер не проходит: браузер кладёт его прямо в
+                 хранилище по подписанной ссылке — см. stores/messenger.js::sendFile. -->
             <input ref="fileInput" type="file" class="hidden" @change="onFileChosen"
                    :accept="(uploadLimits.ext || []).join(',')" />
-            <button type="button" @click="pickFile" :disabled="mascotCooldown.active"
-                    :title="locale.t('files.attach', 'Прикрепить файл')"
-                    :aria-label="locale.t('files.attach', 'Прикрепить файл')"
-                    class="grid size-10 shrink-0 place-items-center rounded-lg border border-border2 text-text3
-                           transition-colors hover:border-accent hover:text-accent disabled:opacity-50">
-              <Paperclip class="size-5" />
-            </button>
-            <!-- Разметку подсказывать не нужно: над полем есть кнопки B/I/U/S/код/цитата.
-               Про /vector говорим только там, где команда работает — в «Избранном». -->
-          <textarea ref="composer" v-model="draft" rows="1" :placeholder="composerHint"
-                      @keydown="onComposerKeydown" @input="onComposerInput" :disabled="mascotCooldown.active"
-                      class="max-h-32 min-h-[40px] min-w-0 flex-1 resize-none rounded-lg border border-border2 bg-card2 px-3 py-2 text-base text-text outline-none focus:border-accent focus:bg-card disabled:opacity-60 sm:text-sm" />
+            <div class="relative shrink-0">
+              <button type="button" @click="plusMenu = !plusMenu" :disabled="mascotCooldown.active"
+                      :title="locale.t('chatThread.attachMenu', 'Прикрепить')"
+                      :aria-label="locale.t('chatThread.attachMenu', 'Прикрепить')"
+                      class="grid size-10 place-items-center rounded-lg border border-border2 text-text3
+                             transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+                      :class="{ 'border-accent text-accent': plusMenu }">
+                <Plus class="size-5" />
+              </button>
+              <!-- Подложка: клик мимо закрывает. Меню открывается ВВЕРХ — под кнопкой у
+                   композера места нет никогда, он и так прижат к низу экрана. -->
+              <div v-if="plusMenu" class="fixed inset-0 z-30" @click="plusMenu = false"></div>
+              <div v-if="plusMenu"
+                   class="absolute bottom-12 left-0 z-40 w-52 overflow-hidden rounded-xl border border-border2 bg-card py-1 shadow-card">
+                <button type="button" @click="plusMenu = false; pickFile()"
+                        class="flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm text-text hover:bg-bg2">
+                  <Paperclip class="size-4 shrink-0 text-text3" />
+                  {{ locale.t('files.attach', 'Прикрепить файл') }}
+                </button>
+                <button type="button" @click="plusMenu = false; showGifPicker = true"
+                        class="flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm text-text hover:bg-bg2">
+                  <span class="w-4 shrink-0 text-[11px] font-extrabold tracking-tight text-text3">GIF</span>
+                  {{ locale.t('chatThread.gifPick', 'GIF') }}
+                </button>
+                <button type="button" @click="plusMenu = false; showQuickReplies = true"
+                        class="flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm text-text hover:bg-bg2">
+                  <Zap class="size-4 shrink-0 text-text3" />
+                  {{ locale.t('chatThread.quickReplies', 'Быстрые ответы') }}
+                </button>
+              </div>
+            </div>
+            <!-- Поле ввода и ЗЕРКАЛО под ним. Текст поля прозрачный (виден только курсор),
+                 рисует его зеркало — иначе приглушить символы разметки нечем: покрасить
+                 часть содержимого textarea браузер не даёт. Метрики у обоих обязаны
+                 совпадать до пикселя, поэтому класс раскладки общий (gb-composer-box). -->
+            <div class="relative min-w-0 flex-1">
+              <div ref="mirror" aria-hidden="true"
+                   class="gb-composer-box gb-composer-mirror pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words">
+                <span v-for="(sp, i) in draftSpans" :key="i" :class="sp.dim ? 'gb-md-dim' : 'gb-md-plain'">{{ sp.text }}</span>
+              </div>
+              <textarea ref="composer" v-model="draft" rows="1" :placeholder="composerHint"
+                        @keydown="onComposerKeydown" @input="onComposerInput" @scroll="syncMirrorScroll"
+                        @select="updateFmtBubble" @mouseup="updateFmtBubble" @keyup="updateFmtBubble"
+                        @blur="onComposerBlur"
+                        :disabled="mascotCooldown.active"
+                        class="gb-composer-box gb-composer-input relative w-full resize-none rounded-lg border border-border2 bg-card2 outline-none focus:border-accent focus:bg-card disabled:opacity-60" />
+              <!-- Квадратное облачко над выделением (снимок 06 задания). Появляется ТОЛЬКО
+                   когда есть что форматировать. mousedown.prevent обязателен: без него
+                   нажатие сначала снимает выделение в поле, и оборачивать становится
+                   нечего — кнопка выглядела бы сломанной. -->
+              <div v-if="fmtBubble.open"
+                   class="absolute z-40 -translate-x-1/2 -translate-y-full rounded-lg border border-border2 bg-card p-0.5 shadow-card"
+                   :style="{ left: fmtBubble.left + 'px', top: fmtBubble.top + 'px' }">
+                <div class="flex items-center gap-0.5">
+                  <button v-for="b in FMT_BUTTONS" :key="b.marker" type="button" :title="b.title"
+                          @mousedown.prevent="applyFmt(b.marker)"
+                          class="grid size-7 place-items-center rounded-md transition-colors hover:bg-bg2"
+                          :class="fmtActive(b.marker) ? 'bg-bg2 text-accent' : 'text-text3 hover:text-text'">
+                    <component :is="b.icon" class="size-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
             <button type="submit" :disabled="(!draft.trim() && !pendingFile) || sending || mascotCooldown.active" :aria-label="locale.t('chatThread.send', 'Отправить')"
                     class="grid size-10 shrink-0 place-items-center rounded-lg bg-accent text-white transition-colors hover:bg-accent2 disabled:opacity-50">
               <Send class="size-5" />
@@ -2030,6 +2287,7 @@ function openActivities() {
     <!-- Оверлей действий -->
     <MessageActionsOverlay v-if="overlay.open" :message="overlay.message" :x="overlay.x" :y="overlay.y"
                            :translated="!!tr.shownFor(overlay.message?.id)"
+                           :selection="overlay.selection" :kind="kind" :can-pin="canPin" :can-link="canLink"
                            @pick="onPick" @react="onReact" @close="overlay.open = false" />
 
     <!-- §D11: история редактирования сообщения -->
@@ -2088,6 +2346,13 @@ function openActivities() {
     <!-- §12: оверлей отчёта куратора (круговая + плоские по предметам + дрилл-даун). -->
     <TranslateDialog v-if="showTranslate" @close="showTranslate = false" />
     <GifPicker v-if="showGifPicker" @pick="m.sendGif($event)" @close="showGifPicker = false" />
+
+    <!-- Колесо быстрых ответов (просьба Влада 05.09.2026). Геометрия — общая с колесом
+         активностей (utils/wheelGeometry.js), крестик в центре закрывает. -->
+    <QuickReplyWheel v-if="showQuickReplies" :items="quickReplyItems" :can-manage="canManageTemplates"
+                     @pick="onQuickReplyPick" @remove="onQuickReplyRemove"
+                     @add="showQuickReplies = false; showTemplateForm = true"
+                     @close="showQuickReplies = false" />
     <CuratorReportOverlay v-if="openReportOverlay" :report-id="openReportOverlay" @close="openReportOverlay = null" />
     <ForwardPicker v-if="forwardState.open" :count="forwardState.ids.length"
                    @submit="onForwardSubmit" @close="forwardState = { open: false, ids: [] }" />
@@ -2147,6 +2412,56 @@ function openActivities() {
   margin: 4px 0; font-size: 0.85em;
 }
 .msg-body :deep(pre code) { background: none; padding: 0; }
+/* ── Зеркало композера ────────────────────────────────────────────────────────────────
+   Поле ввода и зеркало обязаны совпадать ПО ВСЕМ метрикам: шрифт, размер, межстрочный
+   интервал, отступы, перенос слов. Разойдётся хоть одна — приглушённые символы съедут с
+   настоящих, и это будет выглядеть как рябь в поле ввода. Поэтому раскладка задана ОДНИМ
+   классом на оба элемента, а не двумя похожими наборами утилит. */
+.gb-composer-box {
+  box-sizing: border-box;
+  min-height: 40px;
+  max-height: 8rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  font-family: inherit;
+  border-radius: 0.5rem;
+  /* ⚠️ РАМКУ здесь НЕ задаём. Этот файл лежит вне @layer, а утилиты Tailwind — внутри,
+     то есть любое правило отсюда сильнее `border-border2` у поля ввода: поставь тут
+     `border: 1px solid transparent` — и поле молча лишится видимой рамки. Ширину рамки
+     зеркалу добавляет отдельный класс ниже, чтобы текст в нём не съезжал на пиксель. */
+  border-width: 1px;
+  border-style: solid;
+}
+.gb-composer-mirror { border-color: transparent; }
+@media (min-width: 640px) {
+  .gb-composer-box { font-size: 0.875rem; }
+}
+/* Текст поля прозрачный — его рисует зеркало. Курсор и выделение остаются видимыми:
+   `caret-color` и `::selection` от `color` не зависят. */
+.gb-composer-input {
+  color: transparent;
+  caret-color: var(--gb-text);
+  overflow-y: auto;
+}
+.gb-composer-input::selection { background: color-mix(in srgb, var(--gb-accent) 35%, transparent); }
+/* ⚠️ Плейсхолдер задаём ЯВНО: он наследует `color`, то есть вместе с текстом стал бы
+   прозрачным — подсказка в пустом поле исчезла бы совсем. */
+.gb-composer-input::placeholder { color: var(--gb-text-dim); opacity: 1; }
+.gb-md-plain { color: var(--gb-text); }
+/* Символы закрытой пары — приглушены, как в Discord (снимок 07 задания). */
+.gb-md-dim { color: var(--gb-text-dim); opacity: 0.55; }
+
+/* Подсветка процитированного куска после перехода по цитате. Временная: постоянная
+   осталась бы висеть после прочтения, и следующий переход дал бы два «важных» места. */
+.msg-body :deep(mark.gb-quote-hit),
+mark.gb-quote-hit {
+  background: color-mix(in srgb, var(--gb-accent) 35%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
 .msg-body :deep(blockquote) {
   border-left: 3px solid currentColor;
   margin: 4px 0; padding: 2px 10px; opacity: 0.85;

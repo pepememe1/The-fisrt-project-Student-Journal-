@@ -927,7 +927,42 @@ def teacher_assignments(db, teacher_id: str, year: str, semester,
     #точного скоупа цел — появилось хоть одно назначение, и работают ТОЛЬКО они (return
     #выше), поэтому «препод видит чужие группы» не возвращается. Это мост на время ввода
     #данных, а не режим: снимается удалением этой ветки, когда назначения расставлены.
-    return _drop_subjects_outside_current_plan(db, _assignments_fallback(db, teacher_id), year, semester)
+    #
+    #🔥 НО У МОСТА НЕ БЫЛО ПЕРИОДА, И ЭТО ДЕРЖАЛО ПРЕПОДАВАТЕЛЯ НА ПРОШЛОМ КУРСЕ
+    #(05.09.2026). `_assignments_fallback` собирает пары из `Lesson` БЕЗ фильтра по
+    #термину, поэтому после смены курса преподаватель продолжал видеть прошлогодние
+    #группы как действующие — «сейчас преподы не открепляются» из жалобы Влада. Сузить
+    #мост глобально до текущего термина нельзя: сразу после перевода текущих занятий нет
+    #НИ У КОГО, и все разом ушли бы во вторую ветку фолбэка — «все группы, где числится
+    #мой предмет», то есть весь колледж. Поэтому мост выключается ПОГРУППНО и только
+    #там, где администратор уже принял решение (см. course_rollover.advance).
+    return _drop_subjects_outside_current_plan(
+        db, _drop_groups_with_explicit_assignments(
+            db, _assignments_fallback(db, teacher_id), year, semester),
+        year, semester)
+
+
+def _drop_groups_with_explicit_assignments(db, pairs: list, year: str, semester) -> list:
+    """Убрать из моста группы, переведённые на новый курс.
+
+    У такой группы «нет строки с моим id» означает «мне тут не назначено», а не «данные
+    ещё не ввели», — и мост, придуманный против пустого журнала у всех сразу, здесь
+    работает против своей же цели: возвращает преподавателю прошлогоднюю нагрузку.
+
+    ⚠️ Спрашиваем ОДИН раз на группу: функция стоит на пути каждого запроса кабинета
+    преподавателя, а групп в паре может быть десяток.
+    """
+    if not pairs:
+        return pairs
+    from . import course_rollover as CR
+    cache = {}
+    out = []
+    for group, subject in pairs:
+        if group not in cache:
+            cache[group] = CR.assignments_must_be_explicit(db, group, year, semester)
+        if not cache[group]:
+            out.append((group, subject))
+    return out
 
 
 def _drop_subjects_outside_current_plan(db, pairs: list, year: str, semester) -> list:

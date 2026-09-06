@@ -29,6 +29,21 @@ def open_direct(user_id: str, user: User = Depends(get_current_user),
 
 
 # ── Список бесед ─────────────────────────────────────────────────────────────────────
+def _preview_out(msg, me_id: str, sender_name: str, att: dict = None) -> dict:
+    """Сообщение для ПРЕВЬЮ в списке чатов — то же самое, но без цитаты.
+
+    🔒 Цитату здесь убираем НАМЕРЕННО (нашёл Полковник 06.09.2026). Список чатов рисует
+    только текст последнего сообщения (`utils/messagePreview.js`), то есть поле всё равно
+    не показывается, — а путь мимо `_blank_quotes_of_deleted` был: гашение цитаты
+    удалённого оригинала живёт в `_attach_rich_meta`, а превью его не зовёт. Значит
+    процитированный кусок сообщения, удалённого «у всех», уезжал бы в ответ ручки.
+    Убрать лишнее поле дешевле и надёжнее, чем не забыть подчистить его в третьем месте.
+    """
+    out = _msg_out(msg, me_id, sender_name, att)
+    out["reply_quote"] = ""
+    return out
+
+
 @router.get("/chats")
 def list_chats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Беседы текущего пользователя: собеседник/заголовок, последнее сообщение, непрочитанные.
@@ -109,9 +124,9 @@ def list_chats(user: User = Depends(get_current_user), db: Session = Depends(get
             "unread": unread,
             "mention_message_id": mention_id,     #0 — меня не отмечали
             "mention_loud": mention_loud,
-            "last_message": (_msg_out(last, user.id, sender_name,
-                                              _att_map(db, [last]).get(
-                                                  getattr(last, "attachment_id", "") or ""))
+            "last_message": (_preview_out(last, user.id, sender_name,
+                                          _att_map(db, [last]).get(
+                                              getattr(last, "attachment_id", "") or ""))
                              if last else None),
             "last_at": (last.created_at if last else conv.created_at) or "",
             #Системный канал («Мои оценки», «Расписание · Группа», «Объявления») ведёт
