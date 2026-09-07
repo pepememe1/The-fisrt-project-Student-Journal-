@@ -2137,11 +2137,20 @@ function openActivities() {
                 </button>
               </div>
             </div>
-            <!-- Поле ввода и ЗЕРКАЛО под ним. Текст поля прозрачный (виден только курсор),
-                 рисует его зеркало — иначе приглушить символы разметки нечем: покрасить
-                 часть содержимого textarea браузер не даёт. Метрики у обоих обязаны
-                 совпадать до пикселя, поэтому класс раскладки общий (gb-composer-box). -->
-            <div class="relative min-w-0 flex-1">
+            <!-- Поле ввода и ЗЕРКАЛО. Текст поля прозрачный (виден только курсор), рисует
+                 его зеркало — иначе приглушить символы разметки нечем: покрасить часть
+                 содержимого textarea браузер не даёт.
+                 🔥 РАМКА И ФОН ЖИВУТ НА ОБЁРТКЕ, А НЕ НА ПОЛЕ (06.09.2026, жалоба Влада
+                 «когда набираем текст, его вообще не видно»). Это была настоящая
+                 регрессия, доехавшая до боя: у поля стоял непрозрачный `bg-card2`, оно
+                 лежало ПОВЕРХ зеркала и закрывало его своим фоном — а свой текст у поля
+                 прозрачный. Видно не было НИЧЕГО.
+                 ⚠️ Урок общий: делая элемент прозрачным, проверь, что под ним ВИДНО. Фон
+                 соседа — такая же преграда, как непрозрачный текст, и ни сборка, ни
+                 линтер, ни тесты этого не показывают. Меня это стоило прода.
+                 ⚠️ Подсветка фокуса — через `focus-within` на обёртке: фокус получает
+                 поле, а рамку теперь рисует не оно. -->
+            <div class="gb-composer-wrap relative min-w-0 flex-1 rounded-lg border border-border2 bg-card2">
               <div ref="mirror" aria-hidden="true"
                    class="gb-composer-box gb-composer-mirror pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words">
                 <span v-for="(sp, i) in draftSpans" :key="i" :class="sp.dim ? 'gb-md-dim' : 'gb-md-plain'">{{ sp.text }}</span>
@@ -2151,7 +2160,7 @@ function openActivities() {
                         @select="updateFmtBubble" @mouseup="updateFmtBubble" @keyup="updateFmtBubble"
                         @blur="onComposerBlur"
                         :disabled="mascotCooldown.active"
-                        class="gb-composer-box gb-composer-input relative w-full resize-none rounded-lg border border-border2 bg-card2 outline-none focus:border-accent focus:bg-card disabled:opacity-60" />
+                        class="gb-composer-box gb-composer-input relative w-full resize-none border-none bg-transparent outline-none disabled:opacity-60" />
               <!-- Квадратное облачко над выделением (снимок 06 задания). Появляется ТОЛЬКО
                    когда есть что форматировать. mousedown.prevent обязателен: без него
                    нажатие сначала снимает выделение в поле, и оборачивать становится
@@ -2417,6 +2426,11 @@ function openActivities() {
    интервал, отступы, перенос слов. Разойдётся хоть одна — приглушённые символы съедут с
    настоящих, и это будет выглядеть как рябь в поле ввода. Поэтому раскладка задана ОДНИМ
    классом на оба элемента, а не двумя похожими наборами утилит. */
+.gb-composer-wrap { transition: border-color .15s, background-color .15s; }
+.gb-composer-wrap:focus-within {
+  border-color: var(--gb-accent);
+  background: var(--gb-surface);
+}
 .gb-composer-box {
   box-sizing: border-box;
   min-height: 40px;
@@ -2426,14 +2440,12 @@ function openActivities() {
   line-height: 1.5;
   font-family: inherit;
   border-radius: 0.5rem;
-  /* ⚠️ РАМКУ здесь НЕ задаём. Этот файл лежит вне @layer, а утилиты Tailwind — внутри,
-     то есть любое правило отсюда сильнее `border-border2` у поля ввода: поставь тут
-     `border: 1px solid transparent` — и поле молча лишится видимой рамки. Ширину рамки
-     зеркалу добавляет отдельный класс ниже, чтобы текст в нём не съезжал на пиксель. */
-  border-width: 1px;
-  border-style: solid;
+  /* ⚠️ РАМКИ здесь нет вовсе: её рисует ОБЁРТКА (`gb-composer-wrap`), а поле и зеркало
+     лежат внутри неё одинаковыми прямоугольниками. Раньше рамка была на поле, и зеркалу
+     приходилось подставлять прозрачную такой же ширины, чтобы текст не съезжал на
+     пиксель, — лишняя связь, которую легко разорвать правкой одного из двух. */
+  border: 0;
 }
-.gb-composer-mirror { border-color: transparent; }
 @media (min-width: 640px) {
   .gb-composer-box { font-size: 0.875rem; }
 }

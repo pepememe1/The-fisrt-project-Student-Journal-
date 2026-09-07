@@ -16,7 +16,7 @@
  * не будет, просто ничего не произойдёт, и понять причину со стороны нельзя.
  */
 import {
-  Palette, Bell, AudioLines, GraduationCap, ShieldCheck, UserCog, Info,
+  Palette, Bell, AudioLines, GraduationCap, ShieldCheck, UserCog, Info, CalendarClock,
 } from '@lucide/vue'
 
 /**
@@ -83,6 +83,18 @@ export const SETTINGS_CATS = [
     ],
   },
   {
+    //🎓 Учебный год — политика показа оценок, а не оформление. Только у администратора:
+    //дату «зачёты и экзамены сданы» задаёт колледж, а не каждый сам себе.
+    id: 'academicYear',
+    icon: CalendarClock,
+    i18n: 'settings.catAcademicYear',
+    label: 'Учебный год',
+    role: 'admin',
+    subs: [
+      { id: 'gradesFreeze', i18n: 'settings.gradesFreeze', label: 'Заморозка оценок' },
+    ],
+  },
+  {
     id: 'teaching',
     icon: GraduationCap,
     i18n: 'settings.catTeaching',
@@ -98,7 +110,17 @@ export const SETTINGS_CATS = [
     i18n: 'settings.catSecurity',
     label: 'Безопасность',
     subs: [
-      { id: 'mfa', i18n: 'settings.mfa', label: 'Второй фактор входа' },
+      //🔥 У АДМИНИСТРАТОРА ЭТОГО ПУНКТА НЕТ ВОВСЕ (06.09.2026, решение Влада).
+      //Довод дословно: «либо админ только один, что неудобно, либо их много, но тогда от
+      //аутентификатора нет смысла, ведь кто угодно может добавить свой аутентификатор и
+      //входить в админку». То есть второй фактор здесь не усиливает защиту, а лишь
+      //создаёт её видимость — а видимость защиты хуже её отсутствия: на неё полагаются.
+      //⚠️ И техническая половина: `mfa.is_active` для роли `admin` уже возвращает False,
+      //то есть заведённый фактор НЕ ДЕЙСТВУЕТ. Оставить настройку значило бы оставить
+      //тумблер, который включается и заведомо ничего не делает, — наш записанный класс
+      //дефекта (вибрация на настольном браузере).
+      //⚠️ Остальным ролям фактор оставлен: у них он работает по-настоящему.
+      { id: 'mfa', i18n: 'settings.mfa', label: 'Второй фактор входа', notRole: 'admin' },
       { id: 'biometric', i18n: 'settings.biometric', label: 'Вход по биометрии' },
     ],
   },
@@ -151,7 +173,12 @@ export function catsForRole(role, caps = {}) {
     .map((c) => ({
       ...c,
       subs: (c.subs || []).filter(
-        (s) => (!s.role || s.role === role) && (!s.device || caps[s.device] === true),
+        (s) => (!s.role || s.role === role)
+          //`notRole` — обратный отбор: пункт есть у всех, КРОМЕ названной роли. Нужен
+          //там, где возможность общая, а одной роли она противопоказана (второй фактор
+          //у администратора: он ей не действует, см. пояснение у пункта).
+          && (!s.notRole || s.notRole !== role)
+          && (!s.device || caps[s.device] === true),
       ),
     }))
     .filter((c) => c.subs.length > 0)

@@ -85,6 +85,41 @@ def student_records(db, surname: str, name: str, group: str | None = None,
     return {lid: g for lid, g in rows if base_lesson_id(lid) in allowed}
 
 
+def student_visible_records(db, surname: str, name: str, group: str | None = None,
+                            cfg=None, today=None) -> dict:
+    """Оценки студента ГЛАЗАМИ СТУДЕНТА — с учётом фазы учебного года.
+
+    🔥 ЕДИНСТВЕННАЯ дверь для студенческих и родительских экранов (06.09.2026). Правило
+    «после сессии видны только итоговые» читают витрина, журнал, статистика, ЗЕТ, долги,
+    Вектор и ачивки — восемь мест. Разложить условие по ним значило бы восемь мест, где
+    однажды забудут, а первое забытое здесь — чужой семестр в среднем балле, то есть ровно
+    то, от чего правило и заведено (см. `grade_policy`).
+
+    ⚠️ Преподаватель, куратор и администратор зовут ОБЫЧНЫЙ `student_records`: им нужна
+    полная картина — вести журнал, разбирать долги, смотреть архив по семестрам. Сторож
+    `test_grade_policy.py` следит, чтобы студенческие роутеры не ходили мимо этой функции.
+    """
+    from datetime import date
+    from . import grade_policy
+    cfg = cfg if cfg is not None else load_config(db)
+    _ty, ts = current_term(cfg)
+    ph = grade_policy.phase(today or date.today(), ts, cfg.get("grades_freeze_date"))
+    return grade_policy.visible_records(student_records(db, surname, name, group), ph)
+
+
+def grades_phase(db, cfg=None, today=None) -> str:
+    """Фаза показа оценок для СТУДЕНТА — чтобы интерфейс мог объяснить, почему пусто.
+
+    Молчаливо пустой журнал читается как поломка; подпись «идёт сессия, показаны итоговые»
+    объясняет то же самое состояние и не заставляет никого искать несуществующий сбой.
+    """
+    from datetime import date
+    from . import grade_policy
+    cfg = cfg if cfg is not None else load_config(db)
+    _ty, ts = current_term(cfg)
+    return grade_policy.phase(today or date.today(), ts, cfg.get("grades_freeze_date"))
+
+
 def current_term(cfg: dict) -> tuple:
     """Текущий учебный термин (год, семестр) из config, иначе — дефолт по дате.
     Год «YYYY/YYYY+1», семестр 1 (осень) | 2 (весна).

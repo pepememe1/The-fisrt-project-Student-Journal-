@@ -936,7 +936,9 @@ def _vector_facts(msg: str, user: User, db: Session, cfg: dict) -> dict:
         lessons = W.filter_lessons_by_student_subgroup(db, W.current_term_lessons(
             db, group, W.current_subject_lessons(
                 db, group, W.group_lessons(db, group)), cfg), user.id)
-        records = W.student_records(db, user.surname, user.name, group)
+        #Вектор отвечает СТУДЕНТУ о нём самом — значит теми же правилами, что и его журнал:
+        #иначе один и тот же вопрос давал бы разные ответы на двух экранах.
+        records = W.student_visible_records(db, user.surname, user.name, group)
         scale_map = W.lesson_scale_map(db, lessons)
 
         if intent == "schedule":

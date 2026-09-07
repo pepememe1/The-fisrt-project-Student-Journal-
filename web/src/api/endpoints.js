@@ -112,9 +112,12 @@ export const connectApi = {
 // СТУДЕНТ ────────────────────────────────────────────────────────────────────────
 export const studentApi = {
   overview: () => api.get('/web/student/overview'),
-  // params: { year, semester } — просмотр архива; без них — текущий семестр.
-  journal: (params = {}) => api.get('/web/student/journal', { params }),
-  stats: (params = {}) => api.get('/web/student/stats', { params }),
+  // ⚠️ АРХИВА ПРОШЛЫХ СЕМЕСТРОВ У СТУДЕНТА НЕТ (06.09.2026): сервер всегда отдаёт
+  // ТЕКУЩИЙ период, что бы ни прислали. Причина арифметическая — средний балл, смешавший
+  // два семестра, не описывает ни один из них. Прошлое смотрит администратор.
+  // Параметры оставлены, чтобы старые ссылки не падали, но они ни на что не влияют.
+  journal: () => api.get('/web/student/journal'),
+  stats: () => api.get('/web/student/stats'),
   insights: () => api.get('/web/student/insights'),
   // ЗЕТ (docs/PLAN-ZET.md) — пусто (subjects: []), пока администратор не задал ни одного.
   zet: (params = {}) => api.get('/web/student/zet', { params }),
@@ -304,6 +307,9 @@ export const adminApi = {
   deleteTeacher: (login) => api.delete(`/web/admin/teachers/${encodeURIComponent(login)}`),
   // Перевод на курс (rollover): продвинуть текущий учебный период. Прошлые — в архив.
   rolloverTerm: (payload = {}) => api.post('/web/admin/term/rollover', payload),
+  // Дата «ДД.ММ», после которой студент видит только итоговые оценки (пусто — выключено).
+  gradesFreeze: () => api.get('/web/admin/term/grades-freeze'),
+  setGradesFreeze: (date) => api.post('/web/admin/term/grades-freeze', { date }),
   // Заявки на регистрацию студентов.
   // Приглашения студентов ссылкой. Выдать может админ ЛЮБОЙ группе, преподаватель —
   // только своим курируемым (проверяет сервер, клиентскому списку он не верит).

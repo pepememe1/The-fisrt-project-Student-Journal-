@@ -527,3 +527,106 @@ def test_course_out_of_range_is_refused_by_the_server(client):
     #Разумный курс по-прежнему проходит — граница не должна съесть рабочий случай.
     assert client.post("/web/admin/groups", json={"name": "К-ok", "course": 4},
                        headers=admin).status_code == 200
+
+
+# ── 🔥 НАСТОЯЩАЯ ПРИЧИНА ЖАЛОБЫ: период ПОЗЖЕ собственной даты занятия ──────────────
+def test_a_lesson_cannot_belong_to_a_term_that_started_after_it(client):
+    """Занятие 17 июля не может принадлежать году, начавшемуся 1 сентября.
+
+    🔥 Найдено НА БОЕВЫХ ДАННЫХ (07.09.2026), и это ровно жалоба Влада «в июле поставил
+    оценку… а оценку всё ещё видно». На бою лежали занятия с датами 17.07, 23.07 и 12.08
+    со штампом `2026/2027·1` — нового учебного года. Поэтому июльские оценки честно
+    проходили любой фильтр по периоду: формально они и были текущими.
+
+    ⚠️ Откуда штамп: граница лета в `db.default_term` двигалась ТРИЖДЫ (1 июля →
+    25 августа → 1 сентября). Занятия, заведённые под ранней границей, получили новый год
+    ещё в июле и остались с ним навсегда — правило починили, данные нет.
+
+    ⚠️ Прошлая починка (`stamp_untermed_lessons`) сюда не доставала: она чинит ПУСТОЙ
+    период, а здесь он заполнен, просто неверно. Именно поэтому автоперевод на бою
+    отчитался «занятий в архив 0» при живой жалобе.
+    """
+    admin = make_admin(client)
+    _group(client, admin, "К74/1", subjects=["Математика"])
+    ty, ts = _cur_term()
+    db = _session()
+    try:
+        #Занятие ИЮЛЬСКОЕ, но помечено ТЕКУЩИМ (осенним) периодом — состояние с боя.
+        _lesson(db, "l-july", "К74/1", "Математика", date="17.07.2026", year=ty, semester=ts)
+        db.commit()
+        before = W.current_term_lessons(db, "К74/1", W.group_lessons(db, "К74/1"))
+        assert [l.id for l in before] == ["l-july"], "до починки июльское занятие текущее"
+
+        assert CR.restamp_future_dated_lessons(db, "К74/1") == 1
+        db.commit()
+        row = db.get(Lesson, "l-july")
+        assert (row.year, row.semester) == ("2025/2026", 2), (row.year, row.semester)
+        after = W.current_term_lessons(db, "К74/1", W.group_lessons(db, "К74/1"))
+        assert after == [], "июльская оценка всё ещё показывается как текущая"
+    finally:
+        db.close()
+
+
+def test_a_september_retake_of_a_spring_exam_is_left_alone(client):
+    """🔒 Обратный случай ЗАКОНЕН и трогать его нельзя.
+
+    Пересдача в сентябре относится к ВЕСЕННЕЙ сессии: её занятие честно датировано позже
+    своего периода. Слепое выравнивание «по дате» унесло бы такие пересдачи в новый
+    семестр — то есть починка одного дефекта создала бы другой, ровно противоположный.
+    """
+    admin = make_admin(client)
+    _group(client, admin, "К74/1", subjects=["Математика"])
+    db = _session()
+    try:
+        #Экзамен весеннего семестра, пересданный 10 сентября.
+        _lesson(db, "l-retake", "К74/1", "Математика", date="10.09.2026",
+                year="2025/2026", semester=2)
+        db.commit()
+        assert CR.restamp_future_dated_lessons(db, "К74/1") == 0
+        row = db.get(Lesson, "l-retake")
+        assert (row.year, row.semester) == ("2025/2026", 2), "пересдачу унесло в новый год"
+    finally:
+        db.close()
+
+
+def test_restamp_is_idempotent_and_ignores_dateless_lessons(client):
+    """Второй прогон чинить нечего, а занятие без даты сверять не с чем.
+
+    Гадать по занятию без даты нельзя: единственный источник правды здесь — сама дата.
+    """
+    admin = make_admin(client)
+    _group(client, admin, "К74/1", subjects=["Математика"])
+    ty, ts = _cur_term()
+    db = _session()
+    try:
+        _lesson(db, "l-july", "К74/1", "Математика", date="17.07.2026", year=ty, semester=ts)
+        _lesson(db, "l-nodate", "К74/1", "Математика", date="", year=ty, semester=ts)
+        db.commit()
+        assert CR.restamp_future_dated_lessons(db, "К74/1") == 1
+        db.commit()
+        assert CR.restamp_future_dated_lessons(db, "К74/1") == 0, "починка не идемпотентна"
+        assert db.get(Lesson, "l-nodate").year == ty, "занятие без даты перештамповали"
+    finally:
+        db.close()
+
+
+def test_autorun_repairs_stamps_even_when_no_group_needs_advancing(client):
+    """Починка штампов идёт у ВСЕХ групп, а не только у переводимых.
+
+    Занятие с периодом позже своей даты показывается как текущее в любой группе. Ждать,
+    пока она соберётся «переходить на курс», означало бы оставить жалобу в силе там, где
+    перевод не нужен вовсе.
+    """
+    admin = make_admin(client)
+    _group(client, admin, "К74/1", subjects=["Математика"])
+    ty, ts = _cur_term()
+    db = _session()
+    try:
+        _lesson(db, "l-july", "К74/1", "Математика", date="17.07.2026", year=ty, semester=ts)
+        db.commit()
+        #Прошлого у группы нет → переводить её не надо, но штамп починить обязаны.
+        assert CR.autorun(db) == []
+        db.commit()
+        assert db.get(Lesson, "l-july").year == "2025/2026"
+    finally:
+        db.close()

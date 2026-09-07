@@ -147,6 +147,52 @@ def stamp_untermed_lessons(db, group: str, fallback: tuple, now: str = "") -> in
     return len(rows)
 
 
+def restamp_future_dated_lessons(db, group: str, now: str = "") -> int:
+    """Занятие не может принадлежать периоду, который начался ПОЗЖЕ его собственной даты.
+
+    🔥 ЭТО И БЫЛА ПРИЧИНА ЖАЛОБЫ (найдено на боевых данных 07.09.2026). Разбор:
+    занятия с датами 17.07.2026, 23.07.2026 и 12.08.2026 лежали на бою со штампом
+    `2026/2027·1` — то есть НОВОГО учебного года, который начинается 1 сентября. Поэтому
+    июльские оценки честно проходили любой фильтр по периоду и показывались как текущие:
+    формально они и были «текущими».
+
+    ⚠️ Откуда взялся неверный штамп. Граница лета в `db.default_term` двигалась ТРИЖДЫ:
+    1 июля → 25 августа → 1 сентября (история — в её докстринге). Занятия, заведённые под
+    ранней границей, получили новый учебный год ещё в июле — и остались с ним навсегда:
+    правку границы применили к БУДУЩИМ штампам, а уже проставленные никто не пересчитал.
+    Это наш класс «исправили правило, забыли данные».
+
+    ⚠️ Прошлая починка (`stamp_untermed_lessons`) здесь не срабатывала вовсе: она чинит
+    занятия с ПУСТЫМ периодом, а у этих он заполнен — просто неверно. Ровно поэтому
+    автоперевод на бою отчитался «занятий в архив 0» при живой жалобе.
+
+    🔒 ПОЧЕМУ ПРАВИМ ТОЛЬКО «ПЕРИОД ПОЗЖЕ ДАТЫ», А НЕ ЛЮБОЕ РАСХОЖДЕНИЕ. Обратный случай
+    законен: пересдача в сентябре относится к весенней сессии, и её занятие честно
+    датировано позже своего периода. Слепое выравнивание «по дате» унесло бы такие
+    пересдачи в новый семестр. А вот период, начавшийся ПОСЛЕ занятия, невозможен по
+    смыслу: занятие не может принадлежать году, который ещё не наступил.
+
+    ⚠️ Занятия без разбираемой даты НЕ ТРОГАЕМ: сверять нечего, а гадать нельзя.
+    """
+    from . import webdata as W
+    now = now or _now_iso()
+    rows = (db.query(Lesson)
+            .filter(Lesson.group_name == group, Lesson.deleted == False,  # noqa: E712
+                    Lesson.year != "").all())
+    fixed = 0
+    for row in rows:
+        by_date = term_of_lesson(row, ())
+        if not by_date:                       #даты нет или не разобрали — не наше дело
+            continue
+        stored = (row.year, int(row.semester or 0))
+        if W._term_key(stored) <= W._term_key(by_date):
+            continue                          #период не позже даты — законно, не трогаем
+        row.year, row.semester = by_date[0], int(by_date[1])
+        row.updated_at = now
+        fixed += 1
+    return fixed
+
+
 def detach_teachers(db, group: str, year: str, semester, now: str = "") -> int:
     """Снять преподавателей со ВСЕХ строк часов группы за УКАЗАННЫЙ период.
 
@@ -198,6 +244,7 @@ def advance(db, group: str, now: str = "") -> dict | None:
     prev = previous_term(cur_y, cur_s)
 
     stamped = stamp_untermed_lessons(db, group, prev, now)
+    restamped = restamp_future_dated_lessons(db, group, now)
     detached = detach_teachers(db, group, cur_y, cur_s, now)
     row.assignments_reset_term = term_label(cur_y, cur_s)
     row.updated_at = now
@@ -217,6 +264,7 @@ def advance(db, group: str, now: str = "") -> dict | None:
         "term": {"year": cur_y, "semester": cur_s},
         "archived_term": {"year": prev[0], "semester": prev[1]},
         "lessons_stamped": stamped,
+        "lessons_restamped": restamped,
         "teachers_detached": detached,
     }
 
@@ -274,8 +322,15 @@ def autorun(db) -> list[dict]:
     rows = (db.query(Group)
             .filter(Group.deleted == False, Group.archived == False)  # noqa: E712
             .order_by(Group.name).all())
+    repaired = 0
     for row in rows:
         try:
+            #🔥 ПОЧИНКА ШТАМПОВ — ДЛЯ ВСЕХ ГРУПП, а не только для переводимых. Занятие с
+            #периодом ПОЗЖЕ собственной даты показывается как текущее в любой группе, и
+            #ждать, пока она соберётся «переходить на курс», означало бы оставить жалобу
+            #в силе там, где перевод не нужен. Правка идемпотентна: второй раз чинить
+            #нечего.
+            repaired += restamp_future_dated_lessons(db, row.name)
             if not needs_advance(db, row, cur_year):
                 continue
             out = advance(db, row.name)
@@ -284,13 +339,14 @@ def autorun(db) -> list[dict]:
         except Exception as e:                                     # noqa: BLE001
             logging.getLogger("gradebook.course_rollover").warning(
                 "[курс] группу %s перевести не удалось: %s", row.name, e)
-    if done:
+    if done or repaired:
         db.commit()
         logging.getLogger("gradebook.course_rollover").warning(
-            "[курс] новый учебный год %s: переведено групп %d, занятий в архив %d, "
-            "откреплено преподавателей %d", cur_year, len(done),
+            "[курс] учебный год %s: переведено групп %d, занятий в архив %d, "
+            "откреплено преподавателей %d, исправлено штампов периода %d",
+            cur_year, len(done),
             sum(d["lessons_stamped"] for d in done),
-            sum(d["teachers_detached"] for d in done))
+            sum(d["teachers_detached"] for d in done), repaired)
     return done
 
 

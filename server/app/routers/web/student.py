@@ -24,7 +24,7 @@ def student_overview(user: User = Depends(get_current_user), db: Session = Depen
         db, user.group_name, W.current_subject_lessons(
             db, user.group_name, W.group_lessons(db, user.group_name)), cfg), user.id)
     by_id = {l.id: l for l in lessons}
-    records = W.student_records(db, user.surname, user.name, user.group_name)
+    records = W.student_visible_records(db, user.surname, user.name, user.group_name, cfg)
     scale_map = W.lesson_scale_map(db, lessons)
 
     #Свежие оценки — по серверной метке времени, только реальные занятия СВОЕЙ группы.
@@ -105,11 +105,27 @@ def student_overview(user: User = Depends(get_current_user), db: Session = Depen
 def student_journal(year: str = Query(""), semester: int = Query(0),
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Журнал студента: занятия сгруппированы по предметам, у каждого — своя оценка.
-    По умолчанию — ТЕКУЩИЙ семестр; year+semester открывают архив прошлого периода."""
+
+    🔥 АРХИВ ПРОШЛЫХ СЕМЕСТРОВ СТУДЕНТУ ЗАКРЫТ (06.09.2026, требование Влада: «первого
+    сентября оценки обнуляются, а по сути улетают в архив, чтобы админ мог смотреть
+    программу за семестры с оценками, но студент не мог видеть свои старые оценки»).
+    Здесь `year`+`semester` открывали прошлый период любому студенту.
+
+    ⚠️ Причина не в секретности, а в арифметике, и названа она самим Владом: «если в
+    прошлом семестре студент был двоечник, а сейчас отличник, чтобы он не был в среднем
+    троечником, т.к. семестры разные». Средний, смешавший два семестра, не описывает НИ
+    ОДИН из них и при этом выглядит настоящим.
+
+    ⚠️ Параметры НЕ УДАЛЕНЫ и отказом не отвечают: старая ссылка/закладка/офлайн-копия
+    просто получает ТЕКУЩИЙ семестр. Отказ здесь читался бы как поломка журнала, а
+    подмена периода — это ровно то, что человеку и нужно показать.
+    ⚠️ Ни одна оценка при этом не удаляется: администратор и выгрузки видят всё.
+    """
     _require("student", user)
     cfg = W.load_config(db)
+    year, semester = "", 0
     ty, ts = _resolve_term(cfg, year, semester)
-    is_archive = bool((year or "").strip() and semester)
+    is_archive = False
     #Тот же скоуп, что у статистики: журнал текущего семестра показывает предметы
     #ДЕЙСТВУЮЩЕГО плана, архив — то, что реально велось тогда. Иначе список предметов в
     #журнале и в статистике расходится, и непонятно, какому из них верить.
@@ -118,7 +134,7 @@ def student_journal(year: str = Query(""), semester: int = Query(0),
     lessons = W.filter_lessons_by_student_subgroup(db, W.current_subject_lessons(
         db, user.group_name,
         W.group_lessons(db, user.group_name, year=ty, semester=ts), is_archive), user.id)
-    records = W.student_records(db, user.surname, user.name, user.group_name)
+    records = W.student_visible_records(db, user.surname, user.name, user.group_name, cfg)
     scale_map = W.lesson_scale_map(db, lessons)
 
     from collections import OrderedDict
@@ -155,11 +171,22 @@ def student_journal(year: str = Query(""), semester: int = Query(0),
 def student_stats(year: str = Query(""), semester: int = Query(0),
                   user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Статистика студента: общий средний, по предметам, пропуски, задолженности.
-    По умолчанию — текущий семестр; year+semester — архив."""
+
+    🔥 ТОЛЬКО ТЕКУЩИЙ СЕМЕСТР (06.09.2026), как и журнал. Здесь `year`+`semester`
+    открывали архив, и именно там средний балл смешивал семестры — то, из-за чего правило
+    и заведено: «если в прошлом семестре студент был двоечник, а сейчас отличник, чтобы он
+    не был в среднем троечником, т.к. семестры разные».
+
+    ⚠️ Параметры не удалены и отказом не отвечают: старая ссылка получает текущий период.
+    Отказ читался бы как поломка статистики, а подмена периода показывает то, что нужно.
+    ⚠️ ЗЕТ (`/student/zet`) НЕ ТРОГАЕМ намеренно: зачётные единицы копятся за всё обучение,
+    и «архив» там — не смешение семестров, а сам смысл показателя.
+    """
     _require("student", user)
     cfg = W.load_config(db)
+    year, semester = "", 0
     ty, ts = _resolve_term(cfg, year, semester)
-    is_archive = bool((year or "").strip() and semester)   #явно выбран прошлый семестр
+    is_archive = False
     #⚠️ Предметы, УБРАННЫЕ из учебного плана группы, в текущую статистику не идут: их
     #занятия и оценки остаются в базе (это история), но диаграмма «мои предметы» обязана
     #показывать то, что человек изучает СЕЙЧАС. В архиве фильтр не применяется — см.
@@ -169,7 +196,7 @@ def student_stats(year: str = Query(""), semester: int = Query(0),
     lessons = W.filter_lessons_by_student_subgroup(db, W.current_subject_lessons(
         db, user.group_name,
         W.group_lessons(db, user.group_name, year=ty, semester=ts), is_archive), user.id)
-    records = W.student_records(db, user.surname, user.name, user.group_name)
+    records = W.student_visible_records(db, user.surname, user.name, user.group_name, cfg)
     #Долги и пропуски в ДЕФОЛТНОМ виде считаем по занятиям БЕЗ штампа термина ТОЖЕ (как
     #overview): иначе легаси-занятия без year/semester (десктоп до штампа) выпадают из
     #фильтра текущего термина, и реальные долги/пропуски «исчезают». Занятия с ЧУЖИМ, но
@@ -207,7 +234,7 @@ def student_insights(user: User = Depends(get_current_user), db: Session = Depen
     lessons = W.filter_lessons_by_student_subgroup(db, W.current_term_lessons(
         db, user.group_name, W.current_subject_lessons(
             db, user.group_name, W.group_lessons(db, user.group_name)), cfg), user.id)
-    records = W.student_records(db, user.surname, user.name, user.group_name)
+    records = W.student_visible_records(db, user.surname, user.name, user.group_name, cfg)
     scale_map = W.lesson_scale_map(db, lessons)
     avg = W.average(lessons, records, cfg, scale=scale_map)
     cards = []
@@ -306,6 +333,9 @@ def teacher_insights(group: str = Query(...),
 
     vals, debtors, risky, absc_total = [], 0, 0, 0
     for s in studs:
+        #не-студент: это ручка ПРЕПОДАВАТЕЛЯ (`/teacher/insights`), просто живёт в
+        #этом файле. Ему нужна полная картина по группе — политика показа оценок
+        #студенту к нему не относится (см. grade_policy).
         recs = W.student_records(db, s.surname, s.name, group)
         a = W.average(lessons, recs, cfg, scale=tscale)
         if a > 0:

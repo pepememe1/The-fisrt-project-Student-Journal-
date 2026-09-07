@@ -18,6 +18,56 @@ def terms(user: User = Depends(get_current_user), db: Session = Depends(get_db))
     return {"current": {"year": cy, "semester": cs}, "terms": W.list_terms(db)}
 
 
+@router.get("/admin/term/grades-freeze")
+def admin_get_grades_freeze(_admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Дата, после которой студенту видны только ИТОГОВЫЕ оценки. Пусто — правило выключено.
+
+    Требование Влада (06.09.2026): «время доходит до лета — оценки останавливаются и видны
+    только итоговые (выставим кастомную дату, когда по сути зачёты и экзамены уже сданы)».
+
+    ⚠️ Отдаём и ФАЗУ, в которой продукт находится прямо сейчас. Настройка, по которой
+    нельзя проверить, сработала ли она, проверяется единственным способом — дождаться лета;
+    это не проверка, а надежда.
+    """
+    cfg = W.load_config(db)
+    return {"date": cfg.get("grades_freeze_date") or "",
+            "phase": W.grades_phase(db, cfg),
+            "term": dict(zip(("year", "semester"), W.current_term(cfg)))}
+
+
+@router.post("/admin/term/grades-freeze")
+def admin_set_grades_freeze(payload: dict = Body(...), request: Request = None,
+                            _admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Задать дату заморозки («ДД.ММ») или снять её пустой строкой.
+
+    ⚠️ Год НЕ хранится: дата повторяется каждый учебный год, и записанный год пришлось бы
+    править вручную каждый июнь — тот же класс, из-за которого курс группы хранится годом
+    поступления, а не числом курса.
+
+    ⚠️ Неразобранную строку ОТКЛОНЯЕМ, а не сохраняем. Молча принятый мусор означал бы
+    выключённое правило при заполненном поле — админ считал бы, что настроил, а оценки
+    продолжали бы показываться всё лето.
+    """
+    from ... import grade_policy
+    raw = (payload.get("date") or "").strip()
+    if raw and grade_policy.parse_freeze(raw) is None:
+        raise HTTPException(status_code=400,
+                            detail="Дата задаётся как «ДД.ММ», например «30.06»")
+    row = db.get(ConfigKV, "config")
+    cur = dict(row.value) if row is not None and isinstance(row.value, dict) else {}
+    cur["grades_freeze_date"] = raw
+    now = _now_iso()
+    if row is None:
+        db.add(ConfigKV(key="config", value=cur, updated_at=now, deleted=False))
+    else:
+        row.value = cur
+        row.updated_at = now
+    db.commit()
+    audit.log(db, request, actor=_admin.login, role="admin", action="term.grades_freeze",
+              detail=raw or "снята")
+    return {"ok": True, "date": raw, "phase": W.grades_phase(db)}
+
+
 @router.post("/admin/term/rollover")
 def admin_term_rollover(payload: dict = Body(default={}), request: Request = None,
                         _admin: User = Depends(require_admin), db: Session = Depends(get_db)):

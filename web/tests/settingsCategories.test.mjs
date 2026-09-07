@@ -22,6 +22,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { catsForRole } from '../src/config/settingsSections.js'
 
 const SETTINGS = new URL('../src/pages/Settings.vue', import.meta.url).pathname
   .replace(/^\/([A-Za-z]:)/, '$1')
@@ -198,4 +199,32 @@ test('подкатегорий профиля в списке не остало�
     .filter((id) => cfg.includes(`{ id: '${id}',`))
   assert.deepEqual(остались, [],
     `подкатегории профиля ${остались.join(', ')} вернулись в список настроек`)
+})
+
+// ── Второй фактор у администратора: его нет вовсе (06.09.2026) ──────────────────────
+test('у администратора нет пункта «Второй фактор входа»', () => {
+  // Решение Влада: «либо админ только один, что неудобно, либо их много, но тогда от
+  // аутентификатора нет смысла, ведь кто угодно может добавить свой аутентификатор».
+  // Плюс техническая половина: `mfa.is_active` для роли admin возвращает False, то есть
+  // заведённый фактор НЕ ДЕЙСТВУЕТ — оставленный пункт был бы тумблером, который
+  // включается и заведомо ничего не делает.
+  const subs = catsForRole('admin').flatMap((c) => c.subs.map((s) => s.id))
+  assert.ok(!subs.includes('mfa'), 'пункт второго фактора остался у администратора')
+})
+
+test('остальным ролям второй фактор оставлен — у них он работает', () => {
+  // Обратная половина: правка обязана убрать пункт РОВНО у админа, а не у всех сразу.
+  for (const role of ['teacher', 'student', 'parent']) {
+    const subs = catsForRole(role).flatMap((c) => c.subs.map((s) => s.id))
+    assert.ok(subs.includes('mfa'), `второй фактор пропал у роли ${role}`)
+  }
+})
+
+test('карточка второго фактора не рисуется администратору', () => {
+  // Пункт рельса и сама карточка — разные места, и спрятать одно, забыв другое, легко:
+  // тогда раздел «Безопасность» открывался бы с настройкой, которой в списке нет.
+  const src = readFileSync(new URL('../src/pages/Settings.vue', import.meta.url), 'utf8')
+  const card = src.match(/<Card[^>]*id="set-mfa"[^>]*>/)?.[0] || ''
+  assert.ok(card, 'карточка set-mfa не найдена — тест ослеп')
+  assert.ok(/v-if="!isAdminRole"/.test(card), 'карточка второго фактора видна администратору')
 })

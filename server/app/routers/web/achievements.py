@@ -158,7 +158,7 @@ def eggs_for_journal(user: User = Depends(get_current_user), db: Session = Depen
     lessons = W.filter_lessons_by_student_subgroup(db, W.current_term_lessons(
         db, user.group_name, W.current_subject_lessons(
             db, user.group_name, W.group_lessons(db, user.group_name)), cfg), user.id)
-    records = W.student_records(db, user.surname, user.name, user.group_name)
+    records = W.student_visible_records(db, user.surname, user.name, user.group_name)
     avg = W.average(lessons, records, cfg, scale=W.lesson_scale_map(db, lessons))
 
     #⚠️ Теперь это УСЛОВИЕ + БРОСОК, а не чистое условие (просьба Влада 23.08.2026):

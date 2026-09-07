@@ -554,10 +554,13 @@ const modeChoice = computed(() => teacherChoice.value || studentChoice.value)
           <p v-if="!dayLessons(key).length" class="py-4 text-center text-xs text-text2">{{ locale.t('schedulePage.noLessons', 'Занятий нет') }}</p>
           <ul v-else class="space-y-2">
             <li v-for="(l, i) in dayLessons(key)" :key="i" class="rounded-md border border-border bg-card2 p-2.5">
-              <div class="mb-1 flex items-center justify-between gap-2">
+              <!-- ⚠️ `flex-wrap`: в узкой колонке дня бейджи обязаны переехать на СЛЕДУЮЩУЮ
+                   строку целиком, а не ужиматься до столбика символов (жалоба 06.09.2026).
+                   Сам перенос внутри бейджа запрещён в самом компоненте. -->
+              <div class="mb-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                 <!-- Время не переносим: «10:45–12:20» на двух строках читается как две пары. -->
                 <span class="whitespace-nowrap text-xs font-semibold text-text3">{{ l.pair_no }}. {{ l.time }}</span>
-                <span class="flex items-center gap-1.5">
+                <span class="flex shrink-0 items-center gap-1.5">
                   <!-- 🔥 ПОДГРУППА (01.09.2026). Портал кладёт в одну клетку ДВА разных
                        занятия — своё для каждой подгруппы, — и до этой правки второе
                        пропадало бесследно: половина группы не видела своей пары.
