@@ -189,6 +189,45 @@ async function onCategoryChange(key) {
 let reqSeq = 0
 const nextReq = () => ++reqSeq
 
+// ━━━ КОПИЯ НА ЭКРАН СРАЗУ, СВЕЖЕЕ — МОЛЧА ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// 🔥 Жалоба Влада (07.09.2026): «при открытии расписания оно грузится заново каждый раз».
+// Копия прошлого ответа лежала на диске всё это время (api/offlineCache.js наполняется на
+// КАЖДОМ успешном GET), но читал её только обработчик ошибки — то есть при живой сети её
+// не показывали ни разу. На телефоне это самый заметный экран: заходят в него чаще
+// прочих, а мобильная сеть даёт те самые полсекунды пустоты.
+//
+// ⚠️ Копия НЕ отменяет запрос. Расписание правят на портале и в админке, и показать
+// вчерашнее вместо сегодняшнего значило бы поменять один дефект на худший — человек
+// придёт не на ту пару. Поэтому запрос уходит всегда, а копия лишь закрывает ожидание.
+//
+// ⚠️ СРОК ГОДНОСТИ ОБЯЗАТЕЛЕН. Расписание недельное: копия недельной давности — правда,
+// месячной — уже нет. Слишком старую не показываем вовсе, честный спиннер лучше
+// уверенной неправды.
+const CACHE_SHOW_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Стоит ли показывать копию, снятую в момент `at` (мс). */
+function worthShowing(at) {
+  return !!at && Date.now() - at < CACHE_SHOW_MS
+}
+
+/**
+ * Положить копию на экран. Только то, что нужно для ОТРИСОВКИ.
+ *
+ * ⚠️ Побочных действий здесь нет намеренно: переключение категории, догрузка списка
+ * групп и снимок для виджета остаются за настоящим ответом. Копия — это картинка, а не
+ * источник решений; иначе устаревшее поле `category` увело бы человека в чужую
+ * категорию ещё до того, как сервер успел ответить.
+ */
+function paintCached(hit) {
+  if (!hit || !worthShowing(hit.at) || !hit.data?.schedule) return false
+  data.value = hit.data
+  const wk = Object.keys(hit.data.schedule?.weeks || {}).map(Number).sort((a, b) => a - b)
+  week.value = categoryDated.value ? (wk[0] || 1) : (hit.data.week || 1)
+  loading.value = false
+  return true
+}
+
 const byCourse = ref({})
 const courseFilter = ref('')
 const courseKeys = computed(() => Object.keys(byCourse.value).map(Number).sort((a, b) => a - b))
@@ -219,10 +258,14 @@ async function loadGroupsList() {
 }
 
 async function load() {
-  loading.value = true
   const my = nextReq()
   const forCategory = category.value
   const forGroup = group.value
+  //Спиннер поднимаем ТОЛЬКО если показать нечего: иначе экран моргнул бы «загрузка» и
+  //тут же вернул то же самое, что на нём и было, — это раздражает сильнее ожидания.
+  if (!paintCached(scheduleApi.cachedGet(forGroup || undefined, forCategory))) {
+    loading.value = true
+  }
   try {
     const r = (await scheduleApi.get(forGroup || undefined, forCategory)).data
     //Устаревший ответ отбрасываем: пока шёл запрос, могли сменить категорию или группу
@@ -247,7 +290,9 @@ async function load() {
     if (isStudent.value && !forGroup && r.group) ownGroup.value = r.group
     if (isStudent.value && r.group && r.group === ownGroup.value) pushWidgetSnapshot('group', r)
   } catch {
-    if (my === reqSeq) data.value = null
+    //⚠️ Показанную копию НЕ стираем: «нет связи» — не повод убрать с экрана расписание,
+    //которое человек уже читает. Пусто было и остаётся пусто только если копии не было.
+    if (my === reqSeq && !data.value) data.value = null
   } finally {
     //Спиннер снимает ТОЛЬКО последний запрос — и снимает его всегда, независимо от того,
     //что успело поменяться в category/group за время ожидания (см. комментарий у reqSeq).
@@ -288,8 +333,10 @@ function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null
 onBeforeUnmount(stopPoll)
 
 async function loadTeacher(name) {
-  loading.value = true
   const my = nextReq()
+  if (!paintCached(scheduleApi.cachedTeacher(name, category.value))) {
+    loading.value = true
+  }
   try {
     const r = (await scheduleApi.teacher(name, category.value)).data
     //Тот же токен, что у load()/loadGroupsList: переключение категории во время

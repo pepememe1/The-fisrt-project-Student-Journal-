@@ -7,13 +7,17 @@
 // ⚠️ Общий модуль, а не копия в каждой сцене: бубнят и дерево Делтарун, и точка
 // сохранения Undertale. Разъедься их звук — одна и та же реплика Вектора звучала бы
 // в двух местах по-разному, и это заметно сразу.
-let actx = null
+//
+// 🔥 КОНТЕКСТ ОБЩИЙ, А НЕ СВОЙ (07.09.2026). Раньше здесь была своя переменная `actx`, и
+// разбудить её было НЕЧЕМ: бубнёж запускается сценой пасхалки, а не нажатием человека,
+// поэтому на телефоне контекст создавался уже спящим и щелчки не звучали ни разу. Именно
+// это и слышно как «реплики идут молча». Подробности — в шапке utils/audioContext.js.
+import { withAudio } from './audioContext'
 
 /** Один щелчок. Звук недоступен (нет жеста, политика браузера) — молча ничего. */
 export function mumble() {
-  try {
-    actx = actx || new (window.AudioContext || window.webkitAudioContext)()
-    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime
+  withAudio((actx, t) => {
+    const o = actx.createOscillator(), g = actx.createGain()
     o.type = 'square'
     o.frequency.setValueAtTime(340 + Math.random() * 80, t)
     g.gain.setValueAtTime(0.0001, t)
@@ -21,5 +25,5 @@ export function mumble() {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06)
     o.connect(g).connect(actx.destination)
     o.start(t); o.stop(t + 0.07)
-  } catch { /* звук недоступен — текст всё равно печатается */ }
+  })
 }

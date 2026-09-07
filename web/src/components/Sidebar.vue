@@ -25,7 +25,13 @@ import ReportProblemButton from '@/components/ReportProblemButton.vue'
 import SidebarResizer from '@/components/SidebarResizer.vue'
 import { useSidebarStore } from '@/stores/sidebar'
 
-const props = defineProps({ open: { type: Boolean, default: false } })
+const props = defineProps({
+  open: { type: Boolean, default: false },
+  // Куда человек нажал, пока страница ещё грузится. Нужен, чтобы пункт подсветился ПОД
+  // ПАЛЬЦЕМ сразу, а не через круг до сервера: `route.path` меняется только после того,
+  // как маршрут разрешён (а страницы у нас ленивые — это ещё и загрузка чанка).
+  pending: { type: String, default: '' },
+})
 const openProp = computed(() => props.open)
 const emit = defineEmits(['navigate'])
 
@@ -93,6 +99,17 @@ function isActive(to) {
   if (to.split('/').length <= 2) return route.path === to
   return route.path === to || route.path.startsWith(to + '/')
 }
+
+/**
+ * Подсвечен ли пункт: он открыт ЛИБО его прямо сейчас открывают.
+ *
+ * ⚠️ Второе слагаемое — не украшение. Пункт, нажатый на телефоне, до этой правки не
+ * менялся вообще ничем, пока не догрузится страница: палец уже убрали, а меню выглядит
+ * так, будто нажатие не засчиталось. Отсюда повторные нажатия по соседним пунктам.
+ */
+function highlighted(to) {
+  return isActive(to) || props.pending === to
+}
 </script>
 
 <template>
@@ -150,11 +167,11 @@ function isActive(to) {
             // место. Прячем КЛАССОМ, а не `v-if`: разбор ширины в JS завёл бы вторую
             // границу рядом с `LG_PX` оболочки (см. web/tests/breakpoint.test.mjs).
             item.phoneOnly ? 'lg:hidden' : '',
-            isActive(item.to)
+            highlighted(item.to)
               ? 'bg-accent-glow font-semibold text-accent'
               : 'font-medium text-text3 hover:bg-accent-glow hover:text-accent active:bg-accent-glow active:text-accent',
           ]"
-          @click="emit('navigate')"
+          @click="emit('navigate', item.to)"
         >
           <component :is="item.icon" class="size-[18px] shrink-0" />
           <!-- ⚠️ В СВЁРНУТОМ виде подпись ПОВЁРНУТА, а не обрезана. Обрезка до «Расп…»

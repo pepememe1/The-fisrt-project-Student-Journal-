@@ -25,6 +25,9 @@ import { formatSystemMessage } from '@/utils/messagePreview'
 import { copyText } from '@/utils/clipboard'
 import { highlightIn } from '@/utils/highlightFragment'
 import { markupSpans, toggleWrap, selectionWrapped } from '@/utils/markupSpans'
+//Отступ от края окна берём ОТТУДА ЖЕ, где его знает меню сообщения: два разных
+//просвета у двух всплывающих слоёв читаются как небрежность, а не как решение.
+import { EDGE } from '@/utils/menuPlacement'
 import { useRoute } from 'vue-router'
 import { useConfirm } from '@/composables/useConfirm'
 import MessageActionsOverlay from './MessageActionsOverlay.vue'
@@ -532,6 +535,8 @@ function fmtFull(iso) {
 // выглядеть как рябь. Отсюда одинаковые классы и синхронизация `scrollTop`.
 const mirror = ref(null)
 const fmtBubble = ref({ open: false, left: 0, top: 0, start: 0, end: 0 })
+//Ссылка на само облачко: его ширину надо ИЗМЕРИТЬ, а не предполагать (см. clampFmtBubble).
+const fmtEl = ref(null)
 const draftSpans = computed(() => markupSpans(draft.value))
 
 // Символы, которые предлагает облачко. Ровно те, что понимает `markdownLite` — обещать
@@ -578,12 +583,45 @@ function updateFmtBubble() {
     range.setEnd(b.node, b.offset)
     const r = range.getBoundingClientRect()
     const box = wrap.getBoundingClientRect()
-    //Кламп по ширине обёртки: у выделения в самом конце длинной строки облачко иначе
-    //уезжает за правый край — тот же дефект, что чинили у меню сообщения, только мельче.
-    const half = 96
-    const left = Math.max(half, Math.min(r.left + r.width / 2 - box.left, box.width - half))
-    fmtBubble.value = { open: true, left, top: r.top - box.top - 8, start, end }
+    fmtBubble.value = {
+      open: true,
+      left: r.left + r.width / 2 - box.left,   //центр выделения, поправим по измерению
+      top: r.top - box.top - 8,
+      start,
+      end,
+    }
+    nextTick(clampFmtBubble)
   } catch { fmtBubble.value.open = false }
+}
+
+/**
+ * Вписать облачко форматирования в экран ПО ИЗМЕРЕНИЮ, а не по вписанному числу.
+ *
+ * 🔥 ТОТ ЖЕ ДЕФЕКТ, ЧТО ЧИНИЛИ У МЕНЮ СООБЩЕНИЯ (найден 07.09.2026 при проверке «нет ли
+ * похожего в других местах»). Здесь стояло `const half = 96`, то есть ширина облачка
+ * объявлялась константой в 192 px. Она неверна по построению: кнопок в облачке столько,
+ * сколько разметок мы поддерживаем, и стоит добавить одну — облачко станет шире, а
+ * кламп продолжит считать по-старому и пустит его за край.
+ *
+ * ⚠️ Вписываем в ОКНО, а не в обёртку. Обёртка — поле ввода, у него свои поля и на узком
+ * экране оно уже окна: кламп по обёртке отодвигал бы облачко там, где место есть, и не
+ * спасал бы там, где его нет.
+ *
+ * ⚠️ `left` — это ЦЕНТР (у элемента `-translate-x-1/2`), поэтому и границы считаются от
+ * половины ширины. Забыть про это — значит увести облачко ровно на полширины.
+ */
+function clampFmtBubble() {
+  const box = composer.value?.parentElement?.getBoundingClientRect()
+  const bw = fmtEl.value?.offsetWidth
+  if (!box || !bw) return                    //ещё не отрисовалось — поправим в следующий раз
+  const half = bw / 2
+  const minCenter = EDGE + half - box.left
+  const maxCenter = window.innerWidth - EDGE - half - box.left
+  //Окно уже самого облачка (очень узкий экран) — центрируем, обрезать симметрично лучше,
+  //чем прижать к одному краю и спрятать половину кнопок за другим.
+  fmtBubble.value.left = maxCenter < minCenter
+    ? window.innerWidth / 2 - box.left
+    : Math.max(minCenter, Math.min(fmtBubble.value.left, maxCenter))
 }
 
 function applyFmt(marker) {
@@ -2165,7 +2203,7 @@ function openActivities() {
                    когда есть что форматировать. mousedown.prevent обязателен: без него
                    нажатие сначала снимает выделение в поле, и оборачивать становится
                    нечего — кнопка выглядела бы сломанной. -->
-              <div v-if="fmtBubble.open"
+              <div v-if="fmtBubble.open" ref="fmtEl"
                    class="absolute z-40 -translate-x-1/2 -translate-y-full rounded-lg border border-border2 bg-card p-0.5 shadow-card"
                    :style="{ left: fmtBubble.left + 'px', top: fmtBubble.top + 'px' }">
                 <div class="flex items-center gap-0.5">

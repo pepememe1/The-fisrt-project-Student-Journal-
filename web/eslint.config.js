@@ -16,7 +16,12 @@ export default [
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
-      globals: { ...globals.browser },
+      globals: {
+        ...globals.browser,
+        //Подставляется Vite на сборке (build/buildStamp.js). Для линтера это обычный
+        //глобал: объявить надо, иначе `no-undef` ругается на живой и рабочий код.
+        __BUILD_STAMP__: 'readonly',
+      },
     },
     rules: {
       // У нас есть одностраничные компоненты вроде Login.vue / Profile.vue — это норма.
