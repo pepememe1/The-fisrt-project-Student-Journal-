@@ -153,7 +153,37 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _hit(egg_id: str) -> bool:
+#🧪 ПРОВЕРЯЮЩИЕ: КОМУ ПАСХАЛКИ ВЫПАДАЮТ ПОЧТИ ВСЕГДА (06.09.2026, просьба Влада
+#«сделай для аккаунта budrin шанс на ачивки в профиле или настройках очень высоким, для
+#проверки в новом дизайне»).
+#
+#⚠️ Список берётся ИЗ ОКРУЖЕНИЯ, а не вписан в код. Логин, вбитый в исходник, уезжает в
+#git, в сборку .exe и в APK — то есть в руки любому, кто их откроет, — и убрать его можно
+#будет только новым релизом. Переменная снимается на бою одной строкой в `.env` и
+#рестартом, а её отсутствие возвращает всем ЧЕСТНЫЙ шанс.
+#
+#⚠️ Это шанс ПОКАЗА, а не выдача ачивки в обход правил: след пишется тем же путём, `claim`
+#проверяет его так же, как у всех. Иначе получилась бы ручка «выдай мне ачивку», которой
+#в продукте нет и быть не должно (§ачивок).
+#
+#⚠️ Границы названы: доля 90 %, а не 100 — при 100 % пропал бы сам факт «выпало», и
+#проверить, что бросок вообще работает, стало бы нечем.
+LUCKY_PERCENT = 90.0
+
+
+def _lucky_logins() -> set:
+    """Логины, которым пасхалки выпадают почти всегда. Пусто — режим выключен."""
+    import os
+    raw = os.environ.get("GRADEBOOK_LUCKY_LOGINS", "")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def is_lucky(login: str) -> bool:
+    """Входит ли человек в список проверяющих."""
+    return bool(login) and login.strip().lower() in _lucky_logins()
+
+
+def _hit(egg_id: str, lucky: bool = False) -> bool:
     """Сам бросок: выпало или нет. Без базы, без побочных эффектов.
 
     ⚠️ Вынесено отдельной функцией не ради красоты, а чтобы её можно было ПРОВЕРИТЬ.
@@ -167,6 +197,10 @@ def _hit(egg_id: str) -> bool:
         `random.random()`, а не `randint`: целочисленный бросок не умеет 7.7 % и молча
         округлил бы её до 7 или 8.
     """
+    #Проверяющий: шанс подменяется ОДНОЙ величиной на все пасхалки — так проверка не
+    #зависит от того, какая из них редкая, а какая частая.
+    if lucky:
+        return random.random() * 100 < LUCKY_PERCENT
     percent = EGG_PERCENT.get(egg_id)
     if percent:
         return random.random() * 100 < percent
@@ -194,7 +228,9 @@ def roll(egg_id: str, user_id: str, db: Session) -> bool:
     if cooldown and was_triggered_recently(user_id, egg_id, db, within_s=cooldown):
         return False
 
-    if not _hit(egg_id):
+    #Логин достаём из `user_id` (`stud:ivanov` / `teach:petrov` / голый логин админа):
+    #списка проверяющих в базе нет, и заводить его ради временной проверки незачем.
+    if not _hit(egg_id, lucky=is_lucky(user_id.split(":")[-1])):
         return False
 
     db.add(EasterEggLog(user_id=user_id, egg_id=egg_id, triggered_at=_now_iso(),

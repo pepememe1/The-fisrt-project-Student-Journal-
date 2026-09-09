@@ -36,6 +36,54 @@ const messenger = useMessengerStore()
 const route = useRoute()
 const sidebarOpen = ref(false)
 
+// ━━━ ВЫЕЗЖАЮЩАЯ ШТОРКА (телефон) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// 🔥 ЗАКРЫТИЕ ЖИВЁТ ЗДЕСЬ, А НЕ У КАЖДОЙ ССЫЛКИ (07.09.2026, жалоба Влада: «при открытии
+// настроек шторка слева остаётся и нужно кликать по пустому месту, с другими вкладками
+// такого нет»). Раньше шторку гасил `@navigate` от `Sidebar`, то есть КАЖДАЯ ссылка
+// обязана была не забыть о нём сообщить. Забыли ровно одну — шестерёнку настроек в
+// карточке себя (`SidebarUserPanel.vue`): это отдельный `RouterLink`, до `Sidebar` его
+// клик не доходит. Наш обычный класс дефекта «первое забытое место»: правило
+// выполнялось в N местах вместо одного.
+//
+// Теперь правило одно и оно про СОБЫТИЕ, а не про ссылку: сменился маршрут — шторки
+// нет. Оно верно и для тех дверей, которых ещё не написали.
+const pendingTo = ref('')
+let pendingTimer = null
+
+// Сколько ждём страницу, прежде чем убрать шторку без неё. Не «таймаут загрузки», а
+// защита от навигации, которая не состоялась вовсе (страж роутера увёл в сторону,
+// чанк не скачался): без неё шторка осталась бы висеть с подсвеченным пунктом.
+const PENDING_MAX_MS = 2000
+
+function closeDrawer() {
+  sidebarOpen.value = false
+  pendingTo.value = ''
+  if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
+}
+
+/**
+ * Нажали пункт меню. Шторку НЕ гасим сразу — сначала подсвечивается выбранное.
+ *
+ * ⚠️ Нажатие в ТОТ ЖЕ раздел закрывает шторку немедленно: маршрут не сменится, а значит
+ * ждать нечего и `watch` ниже не сработает НИКОГДА. Без этой ветки повторное нажатие по
+ * уже открытому пункту оставляло бы меню висеть — то есть починка одного залипания
+ * завела бы другое.
+ */
+function onDrawerNavigate(to) {
+  if (!to || to === route.path) { closeDrawer(); return }
+  pendingTo.value = to
+  if (pendingTimer) clearTimeout(pendingTimer)
+  pendingTimer = setTimeout(closeDrawer, PENDING_MAX_MS)
+}
+
+// Маршрут сменился — страница уже разрешена и её чанк скачан (страницы ленивые, роутер
+// ждёт загрузки). Значит момент честный: шторка уезжает не «через столько-то мс», а
+// когда за ней действительно есть что показать.
+watch(() => route.path, () => { if (sidebarOpen.value) closeDrawer() })
+
+onBeforeUnmount(() => { if (pendingTimer) clearTimeout(pendingTimer) })
+
 // Embed-режим: SPA, встроенная в чужую оболочку, — тогда прячем свою шапку и/или меню,
 // чтобы не вышло «навигации внутри навигации». Флаг приходит из localStorage `gb.embed`
 // (его ставит страница-передатчик десктопа) либо из `?embed=` в адресе; фиксируется один
@@ -252,11 +300,11 @@ onMounted(askLoginEggs)
     </div>
 
     <!-- Мобайл: выезжающий сайдбар -->
-    <transition name="fade">
+    <transition name="drawer">
       <div v-if="sidebarOpen" class="fixed inset-0 z-40 lg:hidden">
-        <div class="absolute inset-0" style="background: var(--gb-overlay)" @click="sidebarOpen = false" />
-        <div class="absolute inset-y-0 left-0 z-50 shadow-xl">
-          <Sidebar :open="sidebarOpen" @navigate="sidebarOpen = false" />
+        <div class="absolute inset-0" style="background: var(--gb-overlay)" @click="closeDrawer" />
+        <div class="gb-drawer-panel absolute inset-y-0 left-0 z-50 shadow-xl">
+          <Sidebar :open="sidebarOpen" :pending="pendingTo" @navigate="onDrawerNavigate" />
         </div>
       </div>
     </transition>
@@ -374,6 +422,43 @@ onMounted(askLoginEggs)
 .fade-leave-active { transition: opacity 0.15s ease; }
 .fade-enter-from,
 .fade-leave-to { opacity: 0; }
+
+/* ━━━ ШТОРКА: ЗАТЕМНЕНИЕ ГАСНЕТ, ПАНЕЛЬ ЕДЕТ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Раньше здесь стоял общий `fade`, то есть меню ПРОЯВЛЯЛОСЬ на месте — отсюда «всё
+   слишком резко»: панель возникала целиком, без направления, и человеку нечем было
+   понять, откуда она взялась и куда денется. Движение тут несёт смысл: слева пришло —
+   слева и уйдёт.
+
+   Кривая `cubic-bezier(.32,.72,0,1)` — быстрый старт и длинное мягкое торможение (так
+   ведут себя панели в iOS). Обычный `ease` тормозит слишком поздно, и на телефоне это
+   читается как рывок в конце.
+
+   ⚠️ Уход КОРОЧЕ прихода (.22 против .3): открытие человек рассматривает, закрытие он
+   уже решил и ждёт результата — одинаковая длительность ощущается вязкой. */
+.drawer-enter-active,
+.drawer-leave-active { transition: opacity 0.24s ease; }
+.drawer-enter-from,
+.drawer-leave-to { opacity: 0; }
+
+.drawer-enter-active .gb-drawer-panel {
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.drawer-leave-active .gb-drawer-panel {
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.drawer-enter-from .gb-drawer-panel,
+.drawer-leave-to .gb-drawer-panel { transform: translateX(-100%); }
+
+/* Человеку с `prefers-reduced-motion` шторка появляется и исчезает без поездки — но
+   появляется, а не пропадает вместе с меню. */
+@media (prefers-reduced-motion: reduce) {
+  .drawer-enter-active,
+  .drawer-leave-active { transition: none; }
+  .drawer-enter-active .gb-drawer-panel,
+  .drawer-leave-active .gb-drawer-panel { transition: none; }
+  .drawer-enter-from .gb-drawer-panel,
+  .drawer-leave-to .gb-drawer-panel { transform: none; }
+}
 
 /* 🔥 УХОДЯЩАЯ СТРАНИЦА ВЫНИМАЕТСЯ ИЗ ПОТОКА (25.08.2026). Влад: «переключался быстро
    между ИИ-помощником и сообщениями — внизу экрана было видно верхнюю часть страницы

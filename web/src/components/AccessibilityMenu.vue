@@ -7,6 +7,7 @@
 // Размещается в сайдбаре (десктоп) и на мобильной полосе — всегда на виду, потому что
 // человеку со слабым зрением её нельзя прятать в глубину настроек.
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { menuMaxHeight, placeAnchored } from '@/utils/menuPlacement'
 import { Glasses, Contrast, X } from '@lucide/vue'
 import { useA11yStore } from '@/stores/a11y'
 import { useLocaleStore } from '@/stores/locale'
@@ -19,6 +20,9 @@ const a11y = useA11yStore()
 const loc = useLocaleStore()
 const open = ref(false)
 const rootEl = ref(null)
+// Ссылка на само меню — без неё нечего измерять, а без измерения вертикальный кламп
+// остаётся обещанием в комментарии (см. place()).
+const menuEl = ref(null)
 
 // ━━ ПОЛОЖЕНИЕ МЕНЮ СЧИТАЕТСЯ, А НЕ ЗАДАЁТСЯ ПРИВЯЗКОЙ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 🔥 Куплено дефектом (23.08.2026, отзыв Влада со скриншотом). Меню было `absolute` с
@@ -37,20 +41,30 @@ const rootEl = ref(null)
 const MENU_W = 250
 const pos = ref({ left: 0, top: 0 })
 
+// 🔥 ЗДЕСЬ СТОЯЛ КОММЕНТАРИЙ «вылезло за край — прижимаем», А ПРИЖИМАЛАСЬ ТОЛЬКО
+// ГОРИЗОНТАЛЬ (найдено при разборе жалобы про меню сообщения, 05.09.2026). Вертикаль
+// считалась как `r.top - pad` со сдвигом `translateY(-100%)` в стиле: у верхней кромки
+// экрана меню уезжало за неё целиком, и заметно это только на низком окне. Комментарий,
+// обещающий проверку, которой нет, — тот же класс дефекта, что константа 360 в меню
+// сообщения: он не краснеет, он просто перестаёт быть правдой.
+//
+// ⚠️ Считаем по ИЗМЕРЕННОЙ высоте, поэтому `place()` зовётся уже после отрисовки меню
+// (см. watch на `open`), а не в момент нажатия кнопки.
 function place() {
   const el = rootEl.value
   if (!el) return
-  const r = el.getBoundingClientRect()
-  const pad = 8
-  //По горизонтали держим правый край кнопки, но не даём вылезти ни влево, ни вправо.
-  const left = Math.min(
-    Math.max(pad, r.right - MENU_W),
-    Math.max(pad, window.innerWidth - MENU_W - pad),
-  )
-  //По вертикали: вверх от кнопки или вниз, как просили; вылезло за край — прижимаем.
-  const up = props.placement === 'up'
-  const top = up ? r.top - pad : r.bottom + pad
-  pos.value = { left, top, up }
+  const anchor = el.getBoundingClientRect()
+  const box = menuEl.value?.getBoundingClientRect()
+  const h = box?.height || 0
+  //Высота ещё не известна (первый кадр) — ставим по-старому и переставим следующим
+  //тиком: мигание на кадр незаметно, прыжок готового меню — заметен.
+  const r = placeAnchored({
+    anchor, w: MENU_W, h, vw: window.innerWidth, vh: window.innerHeight,
+    prefer: props.placement === 'up' ? 'up' : 'down',
+  })
+  //`up` в состоянии больше не хранится: разворот учтён в самом `top`, а лишнее поле
+  //однажды прочитали бы как «меню открыто вверх» и снова прибавили бы к нему transform.
+  pos.value = { left: r.left, top: r.top }
 }
 
 const t = (k, f) => loc.t(k, f)
@@ -102,11 +116,11 @@ onBeforeUnmount(() => {
 
     <!-- Меню -->
     <transition name="a11y-pop">
-      <div v-if="open"
-           class="fixed z-50 rounded-xl border border-border2 bg-card p-3 shadow-card"
+      <div v-if="open" ref="menuEl"
+           class="fixed z-50 overflow-y-auto rounded-xl border border-border2 bg-card p-3 shadow-card"
            :style="{ left: pos.left + 'px', top: pos.top + 'px', width: MENU_W + 'px',
                      maxWidth: 'calc(100vw - 16px)',
-                     transform: pos.up ? 'translateY(-100%)' : 'none' }">
+                     maxHeight: menuMaxHeight(typeof window === 'undefined' ? 800 : window.innerHeight) + 'px' }">
         <div class="mb-2 flex items-center gap-2">
           <Glasses class="size-4 shrink-0 text-accent" />
           <p class="min-w-0 flex-1 truncate font-title text-sm font-bold text-text">

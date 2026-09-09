@@ -94,11 +94,26 @@ async def admin_data_import(file: UploadFile = File(...), sets: str = Form(""),
 
 @router.get("/admin/ai-config")
 def admin_get_ai_config(_admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    """Текущие настройки ИИ (провайдер, ключ/скоуп GigaChat, модель Ollama)."""
+    """Текущие настройки ИИ (провайдер, скоуп GigaChat, модель Ollama).
+
+    🔒 КЛЮЧ GIGACHAT НАРУЖУ НЕ ОТДАЁТСЯ (06.09.2026, пункт P1 плана Ярослава: «секрет
+    должен быть write-only: настроен / не настроен, но не доступен для повторного
+    чтения»). Раньше значение возвращалось целиком, то есть любой, кто получил
+    административную сессию — или снял ответ с экрана, — уносил рабочий ключ к платному
+    внешнему сервису.
+
+    ⚠️ Отдаём ПРИЗНАК `gigachat_configured`, а не пустую строку. Пустая строка означала бы
+    «ключ не задан», и администратор, открыв настройки, честно решил бы, что его стёрли, —
+    а следующим действием вписал бы новый поверх работающего.
+
+    ⚠️ Заменить ключ по-прежнему можно: запись идёт своим путём (`POST /admin/ai-config`),
+    и проверить новый ключ до сохранения тоже можно (`/admin/ai-config/test`). Закрыто
+    ровно ЧТЕНИЕ — то единственное, ради чего секрет наружу и не нужен.
+    """
     cfg = W.load_config(db)
     return {
         "vector_llm": cfg.get("vector_llm", "offline"),
-        "gigachat_credentials": cfg.get("gigachat_credentials", ""),
+        "gigachat_configured": bool((cfg.get("gigachat_credentials") or "").strip()),
         "gigachat_scope": cfg.get("gigachat_scope", "GIGACHAT_API_B2B"),
         "gigachat_model": cfg.get("gigachat_model", "GigaChat"),
         "local_model": cfg.get("local_model", "qwen2.5:3b"),

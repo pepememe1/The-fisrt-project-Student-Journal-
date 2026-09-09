@@ -5,6 +5,9 @@ import { fileURLToPath, URL } from 'node:url'
 //Плагин лежит отдельным файлом, чтобы его можно было проверить тестом, не
 //поднимая весь Vite (web/tests/stripHtmlComments.test.mjs).
 import stripHtmlComments from './build/stripHtmlComments.js'
+//Метка сборки: по ней открытая вкладка узнаёт, что её код устарел после
+//деплоя (см. src/utils/appVersion.js). Тоже отдельным файлом — под тест.
+import buildStamp from './build/buildStamp.js'
 
 // Во время разработки фронтенд крутится на своём порту (5173), а API — на 8000.
 // Чтобы в dev всё выглядело как ОДИН адрес (как на бою за Caddy), проксируем
@@ -14,7 +17,7 @@ const API_TARGET = process.env.VITE_API_TARGET || 'http://localhost:8000'
 const API_PREFIXES = ['/auth', '/me', '/sync', '/admin', '/connect', '/web', '/health', '/docs', '/openapi.json']
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), stripHtmlComments()],
+  plugins: [vue(), tailwindcss(), stripHtmlComments(), buildStamp()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

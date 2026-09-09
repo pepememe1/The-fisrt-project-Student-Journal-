@@ -49,13 +49,37 @@ const STT_MODES = computed(() => [
 const inputCls =
   'h-11 w-full rounded-sm border border-border2 bg-card2 px-3.5 text-text outline-none transition-colors focus:border-accent focus:bg-card'
 
+// 🔒 Ключ GigaChat WRITE-ONLY (06.09.2026, P1 плана Ярослава: «секрет должен быть
+// write-only: настроен / не настроен, но не доступен для повторного чтения»). Сервер
+// больше не отдаёт значение, поэтому поле всегда стартует пустым, а факт настройки живёт
+// отдельным признаком.
+const keyConfigured = ref(false)
+
 onMounted(async () => {
-  try { cfg.value = { ...cfg.value, ...(await adminApi.aiConfig()).data } } catch { /* нет связи — дефолты */ }
+  try {
+    const { data } = await adminApi.aiConfig()
+    cfg.value = { ...cfg.value, ...data }
+    keyConfigured.value = !!data.gigachat_configured
+    //Значения ключа в ответе нет — гасим поле явно, чтобы в нём не осталось прежнего
+    //черновика после повторного открытия страницы.
+    cfg.value.gigachat_credentials = ''
+  } catch { /* нет связи — дефолты */ }
 })
 
 async function save() {
   loading.value = true; saved.value = false
-  try { await adminApi.aiConfigSave(cfg.value); saved.value = true; setTimeout(() => (saved.value = false), 2500) }
+  // ⚠️ ПУСТОЕ ПОЛЕ ОЗНАЧАЕТ «НЕ МЕНЯТЬ», а не «стереть». Сервер ключ не отдаёт, поле
+  // стартует пустым — и без этого правила простое нажатие «Сохранить» уносило бы рабочий
+  // ключ, ничего не трогая. Тот же приём и та же причина, что у пароля сервера в
+  // разделе «Сервер» (§16): страница пароль не показывает, значит пустое поле — не выбор.
+  const payload = { ...cfg.value }
+  if (!String(payload.gigachat_credentials || '').trim()) delete payload.gigachat_credentials
+  try {
+    await adminApi.aiConfigSave(payload)
+    if (payload.gigachat_credentials) keyConfigured.value = true
+    cfg.value.gigachat_credentials = ''
+    saved.value = true; setTimeout(() => (saved.value = false), 2500)
+  }
   finally { loading.value = false }
 }
 
@@ -132,8 +156,15 @@ async function test() {
         <div>
           <label class="mb-1.5 block text-xs font-medium text-text3">{{ locale.t('adminAiSettings.credentialsLabel', 'КЛЮЧ АВТОРИЗАЦИИ (Credentials)') }}</label>
           <div class="relative">
+            <!-- Поле стартует ПУСТЫМ даже когда ключ настроен: сервер его не отдаёт.
+                 Подпись-плейсхолдер честно говорит, есть ключ или нет, — иначе пустое
+                 поле читалось бы как «ключ стёрли», и админ вписал бы новый поверх
+                 работающего. -->
             <input v-model="cfg.gigachat_credentials" :type="showKey ? 'text' : 'password'"
-                   :class="inputCls + ' pr-11'" :placeholder="locale.t('adminAiSettings.credentialsPlaceholder', 'вставьте ключ авторизации GigaChat')" autocomplete="off" />
+                   :class="inputCls + ' pr-11'" autocomplete="off"
+                   :placeholder="keyConfigured
+                     ? locale.t('adminAiSettings.credentialsSet', 'ключ настроен — впишите новый, чтобы заменить')
+                     : locale.t('adminAiSettings.credentialsPlaceholder', 'вставьте ключ авторизации GigaChat')" />
             <button type="button" class="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-sm text-text2 hover:text-accent"
                     @click="showKey = !showKey"><EyeOff v-if="showKey" class="size-4" /><Eye v-else class="size-4" /></button>
           </div>

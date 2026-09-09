@@ -46,6 +46,11 @@ export const useMessengerStore = defineStore('messenger', () => {
   const hasOlder = ref(true)            // есть ли что грузить выше (false — дошли до начала)
   const sending = ref(false)
   const replyTo = ref(null)             // сообщение, на которое отвечаем (или null)
+  // «Ответить с цитатой» (05.09.2026): ВЫДЕЛЕННЫЙ кусок исходного сообщения. Пусто —
+  // обычный ответ, и в пузыре цитируется начало оригинала, как было.
+  // ⚠️ Живёт РЯДОМ с `replyTo`, а не внутри него: `replyTo` — это само сообщение из ленты,
+  // и дописывать в чужой объект своё поле значит однажды отправить его обратно на сервер.
+  const replyQuote = ref('')
   const pinned = ref([])                // закреплённые сообщения активной беседы
   const selectionMode = ref(false)      // режим множественного выбора («Выделить»)
   const selectedIds = ref([])           // id выбранных сообщений
@@ -279,6 +284,22 @@ export const useMessengerStore = defineStore('messenger', () => {
     } catch { /* личный чат может не отдавать расширенное инфо — не критично */ }
   }
 
+  // ── Ссылка на сообщение: открыть беседу по id и перемотать к строке ─────────────
+  // К какому сообщению перемотаться после открытия беседы. Ноль — не надо.
+  // ⚠️ Живёт В СТОРЕ, а не в параметрах `_enterChat`: перемотку делает ChatThread, когда
+  // лента уже отрисована, а `_enterChat` к этому моменту давно вернул управление.
+  const pendingJump = ref(0)
+
+  async function openById(convId, jumpToId = 0) {
+    if (!convId) return false
+    pendingJump.value = Number(jumpToId) || 0
+    //Имя беседы возьмётся из convInfo; если чат уже в списке — берём его заголовок сразу,
+    //чтобы шапка не мигнула пустотой.
+    const known = chats.value.find(c => c.conversation_id === convId)
+    await _enterChat(convId, known?.peer || { full_name: known?.title || '' })
+    return true
+  }
+
   // Открыть беседу из СПИСКА чатов (peer уже в элементе списка).
   async function selectChat(chat) {
     await _enterChat(chat.conversation_id, chat.peer || { full_name: chat.title || '' })
@@ -373,7 +394,8 @@ export const useMessengerStore = defineStore('messenger', () => {
       conversation_id: activeId.value, sender_id: '', sender_name: '', mine: true,
       kind: 'text', body, body_format: 'markdown',
       created_at: new Date().toISOString(), edited_at: '', deleted: false,
-      reply_to_id: reply?.id || null, pinned: false, forwarded_from: null,
+      reply_to_id: reply?.id || null, reply_quote: replyQuote.value || '',
+      pinned: false, forwarded_from: null,
       mentions: [], reactions: [], reply_count: 0, report: null,
     }
   }
@@ -396,7 +418,11 @@ export const useMessengerStore = defineStore('messenger', () => {
       if (i >= 0) messages.value.splice(i, 1)
     }
     try {
-      const { data } = await messengerApi.send(activeId.value, body, replyTo.value?.id || 0, nonce)
+      const { data } = await messengerApi.send(
+        activeId.value, body, replyTo.value?.id || 0, nonce,
+        //Цитату проверяет СЕРВЕР (кусок обязан реально быть в оригинале) — здесь мы её
+        //только передаём. Пустую не шлём вовсе: лишнее поле в теле каждого сообщения.
+        replyQuote.value ? { reply_quote: replyQuote.value } : {})
       // ℹ️ Ветка `open_activity_launcher` убрана 17.08.2026 вместе с командой
       // `/активность` (решение Влада: активности открывает кнопка в шапке беседы, и она
       // зовёт лаунчер напрямую, не спрашивая сервер). Сервер такой ответ больше не шлёт —
@@ -407,6 +433,7 @@ export const useMessengerStore = defineStore('messenger', () => {
       if (!data || !data.client_nonce) убратьЧерновик()
       _appendUnique(data)
       replyTo.value = null
+      replyQuote.value = ''
       setNotice('')
       // Список чатов слева — в ФОН: он про соседнюю панель, а не про отправленное
       // сообщение, и держать ради него композер занятым незачем.
@@ -430,6 +457,7 @@ export const useMessengerStore = defineStore('messenger', () => {
         { kind: 'gif', gif_slug: item.slug || '' })
       _appendUnique(data)
       replyTo.value = null
+      replyQuote.value = ''
       setNotice('')
       await loadChats()
       return true
@@ -491,6 +519,7 @@ export const useMessengerStore = defineStore('messenger', () => {
         { attachment_id: sign.attachment_id })
       _appendUnique(data)
       replyTo.value = null
+      replyQuote.value = ''
       setNotice('')
       onProgress?.(100)
       await loadChats()
@@ -770,11 +799,13 @@ export const useMessengerStore = defineStore('messenger', () => {
     finally { dir.value.loading = false }
   }
 
-  function setReply(msg) { replyTo.value = msg }
-  function clearReply() { replyTo.value = null }
+  // quote — выделенный кусок (необязателен). Гасим его ЯВНО при обычном ответе: иначе
+  // цитата от прошлого ответа уехала бы со следующим сообщением, к которому не относится.
+  function setReply(msg, quote = '') { replyTo.value = msg; replyQuote.value = quote || '' }
+  function clearReply() { replyTo.value = null; replyQuote.value = '' }
   function clearActive() {
     activeId.value = ''; activePeer.value = null; messages.value = []
-    replyTo.value = null; pinned.value = []; activeInfo.value = null
+    replyTo.value = null; replyQuote.value = ''; pinned.value = []; activeInfo.value = null
     isModeration.value = false; clearSelection(); closeThread(); clearSearch()
     setNotice('')
   }
@@ -1195,12 +1226,13 @@ export const useMessengerStore = defineStore('messenger', () => {
 
   return {
     chats, invites, activeId, activePeer, messages, loadingChats, loadingMessages, loadingOlder, hasOlder, sending,
-    replyTo, pinned, selectionMode, selectedIds, isModeration, activeInfo, activeKind,
+    replyTo, replyQuote, pinned, selectionMode, selectedIds, isModeration, activeInfo, activeKind,
     channels, dir,
     peerTyping, totalUnread, notice, activeChat, mascotCooldown,
     loadChats, loadInvites, answerInvite, loadMessages, loadOlder, selectChat, openWith, send, sendGif, markReadActive, loadPinned, setNotice,
     openModeration, pollOnce, startPolling, stopPolling, searchUsers, sendTyping,
     setReply, clearReply, clearActive, reset, loadConvInfo, muteConversation,
+    pendingJump, openById,
     deleteConversation, selectAll, selectNone,
     editMessage, setPinned, removeMessage, forwardMessages, reportMessage,
     toggleReaction, messageHistory,

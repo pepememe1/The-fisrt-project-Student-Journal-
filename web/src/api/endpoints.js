@@ -12,6 +12,7 @@
  * /web/* возвращают только то, что роль вправе видеть, уже в готовом для UI виде.
  */
 import { api, rawApi } from './client'
+import { peekCached } from './offlineCache'
 
 // АВТОРИЗАЦИЯ ──────────────────────────────────────────────────────────────────
 export const authApi = {
@@ -112,9 +113,12 @@ export const connectApi = {
 // СТУДЕНТ ────────────────────────────────────────────────────────────────────────
 export const studentApi = {
   overview: () => api.get('/web/student/overview'),
-  // params: { year, semester } — просмотр архива; без них — текущий семестр.
-  journal: (params = {}) => api.get('/web/student/journal', { params }),
-  stats: (params = {}) => api.get('/web/student/stats', { params }),
+  // ⚠️ АРХИВА ПРОШЛЫХ СЕМЕСТРОВ У СТУДЕНТА НЕТ (06.09.2026): сервер всегда отдаёт
+  // ТЕКУЩИЙ период, что бы ни прислали. Причина арифметическая — средний балл, смешавший
+  // два семестра, не описывает ни один из них. Прошлое смотрит администратор.
+  // Параметры оставлены, чтобы старые ссылки не падали, но они ни на что не влияют.
+  journal: () => api.get('/web/student/journal'),
+  stats: () => api.get('/web/student/stats'),
   insights: () => api.get('/web/student/insights'),
   // ЗЕТ (docs/PLAN-ZET.md) — пусто (subjects: []), пока администратор не задал ни одного.
   zet: (params = {}) => api.get('/web/student/zet', { params }),
@@ -304,6 +308,9 @@ export const adminApi = {
   deleteTeacher: (login) => api.delete(`/web/admin/teachers/${encodeURIComponent(login)}`),
   // Перевод на курс (rollover): продвинуть текущий учебный период. Прошлые — в архив.
   rolloverTerm: (payload = {}) => api.post('/web/admin/term/rollover', payload),
+  // Дата «ДД.ММ», после которой студент видит только итоговые оценки (пусто — выключено).
+  gradesFreeze: () => api.get('/web/admin/term/grades-freeze'),
+  setGradesFreeze: (date) => api.post('/web/admin/term/grades-freeze', { date }),
   // Заявки на регистрацию студентов.
   // Приглашения студентов ссылкой. Выдать может админ ЛЮБОЙ группе, преподаватель —
   // только своим курируемым (проверяет сервер, клиентскому списку он не верит).
@@ -395,13 +402,34 @@ export const publicScheduleApi = {
   week: () => rawApi.get('/public/week'),
 }
 
+// ⚠️ ПАРАМЕТРЫ ЗАПРОСА СОБИРАЮТСЯ ОДИН РАЗ (07.09.2026). У расписания появилась вторая
+// дверь — «покажи сохранённую копию, не дожидаясь сети» (peekCached), а ключ кэша
+// строится ИЗ ТЕХ ЖЕ пути и параметров (см. offlineCache.reqKey). Собери параметры в двух
+// местах — и они разойдутся молча: копия просто перестанет находиться, экран вернётся к
+// спиннеру, и никакой ошибки при этом не будет.
+const scheduleGetParams = (group, category = '') => ({ group, category })
+const scheduleTeacherParams = (name = '', category = '') => ({ name, category })
+
+// 🔥 А ВОТ ПУТЬ ОСТАЁТСЯ ЛИТЕРАЛОМ В КАЖДОМ ВЫЗОВЕ, И ЭТО НЕ НЕДОСМОТР. Первая редакция
+// вынесла его в константу «чтобы наверняка» — и ослепила мост HTTP-контракта
+// (`tools/graph_api_bridge.py`): он ищет `api.get('…')` с ЛИТЕРАЛОМ, поэтому после
+// правки `/web/schedule` и `/web/schedule/teacher` стали числиться «невостребованными
+// роутами». Карта, считающая живой роут мёртвым, опаснее дублирующейся строки: по ней
+// его однажды удалят. Совпадение путей держит `web/tests/scheduleInstant.test.mjs`.
 export const scheduleApi = {
   categories: () => api.get('/web/schedule/categories'),
-  get: (group, category = '') => api.get('/web/schedule', { params: { group, category } }),
+  get: (group, category = '') =>
+    api.get('/web/schedule', { params: scheduleGetParams(group, category) }),
   groups: (category = '') => api.get('/web/schedule/groups', { params: { category } }),
   // Расписание преподавателя (пункт 2): без name сервер матчит ФИО текущего юзера.
   teacher: (name = '', category = '') =>
-    api.get('/web/schedule/teacher', { params: { name, category } }),
+    api.get('/web/schedule/teacher', { params: scheduleTeacherParams(name, category) }),
+
+  /** Копия прошлого ответа БЕЗ похода в сеть: `{data, at}` или null. */
+  cachedGet: (group, category = '') =>
+    peekCached('/web/schedule', scheduleGetParams(group, category)),
+  cachedTeacher: (name = '', category = '') =>
+    peekCached('/web/schedule/teacher', scheduleTeacherParams(name, category)),
   // Выгрузка расписания группы файлом (fmt: xlsx|docx). Строится из ТОГО ЖЕ слитого
   // расписания (портал + правки админа), что показано на сайте.
   exportFile: (group, fmt = 'xlsx', category = '') =>

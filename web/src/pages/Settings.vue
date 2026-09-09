@@ -6,7 +6,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useEasterStore } from '@/stores/easterEggs'
 import { useRouter } from 'vue-router'
 import { Fingerprint, Trash2, ShieldCheck, Volume2, VolumeX, AudioLines, GraduationCap, Check, Mic, MicOff, BellOff, RefreshCw, TriangleAlert, LogOut, X, ChevronLeft, ChevronRight, Pencil, Vibrate, VibrateOff } from '@lucide/vue'
-import { authApi, meApi } from '@/api/endpoints'
+import { adminApi, authApi, meApi } from '@/api/endpoints'
 import FarewellOverlay from '@/components/FarewellOverlay.vue'
 import DarkSoulsFarewell from '@/components/easter/DarkSoulsFarewell.vue'
 import { platformAuthenticatorAvailable, enablePasskey } from '@/api/webauthn'
@@ -54,6 +54,38 @@ function toggleHaptics() {
 }
 const router = useRouter()
 const profileStore = useProfileStore()
+//Роль решает, показывать ли второй фактор: у администратора его нет вовсе (см. карточку).
+const isAdminRole = computed(() => auth.role === 'admin')
+
+// ── Заморозка оценок (только администратор) ──────────────────────────────────────
+// Дата «ДД.ММ», после которой студент видит только итоговые. Пусто — правило выключено.
+// ⚠️ Год не хранится: дата повторяется каждый учебный год, и записанный год пришлось бы
+// править вручную каждый июнь.
+const freezeDate = ref('')
+const freezePhase = ref('')
+const freezeError = ref('')
+const freezeSaving = ref(false)
+async function loadFreeze() {
+  if (auth.role !== 'admin') return
+  try {
+    const { data } = await adminApi.gradesFreeze()
+    freezeDate.value = data.date || ''
+    freezePhase.value = data.phase || ''
+  } catch { /* не критично: карточка просто покажет пустое поле */ }
+}
+async function saveFreeze() {
+  freezeSaving.value = true
+  freezeError.value = ''
+  try {
+    const { data } = await adminApi.setGradesFreeze(freezeDate.value.trim())
+    freezePhase.value = data.phase || ''
+  } catch (e) {
+    //Отказ ПОКАЗЫВАЕМ: молча не сохранённая дата означала бы выключённое правило при
+    //заполненном поле — админ считал бы, что настроил.
+    freezeError.value = e?.response?.data?.detail || loc.t('settings.freezeFailed', 'Не удалось сохранить дату')
+  } finally { freezeSaving.value = false }
+}
+onMounted(loadFreeze)
 
 // ── Выход из аккаунта ────────────────────────────────────────────────────────────
 // Переехал сюда из шапки (живой отзыв 3.5.6). Причина не косметическая: выход стоял
@@ -828,11 +860,35 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
       </div>
     </Card>
 
-    <!-- Второй фактор входа. ⚠️ БЕЗ v-if по устройству, в отличие от блока ниже:
-         код из приложения работает где угодно, а администратору он ОБЯЗАТЕЛЕН —
-         спрятать эту карточку значило бы спрятать единственный способ вернуть себе
-         доступ к разделам. -->
-    <Card id="set-mfa" :class="sec('security')" :title="loc.t('settings.mfa', 'Второй фактор входа')"
+    <!-- 🎓 ЗАМОРОЗКА ОЦЕНОК (06.09.2026, требование Влада: «время доходит до лета —
+         оценки останавливаются и видны только итоговые, выставим кастомную дату, когда
+         по сути зачёты и экзамены уже сданы»).
+         ⚠️ Показываем и ТЕКУЩУЮ ФАЗУ: настройка, по которой нельзя проверить, сработала
+         ли она, проверяется единственным способом — дождаться лета. Это не проверка. -->
+    <Card v-if="isAdminRole" id="set-gradesFreeze" :class="sec('academicYear')"
+          :title="loc.t('settings.gradesFreeze', 'Заморозка оценок')"
+          :subtitle="loc.t('settings.gradesFreezeHint', 'После этой даты студент видит только итоговые оценки. Пусто — правило выключено.')">
+      <div class="flex flex-wrap items-center gap-2">
+        <input v-model="freezeDate" placeholder="30.06" maxlength="5"
+               class="h-10 w-28 rounded-lg border border-border2 bg-card2 px-3 text-sm text-text outline-none focus:border-accent" />
+        <AppButton :disabled="freezeSaving" @click="saveFreeze">{{ loc.t('common.save', 'Сохранить') }}</AppButton>
+        <span v-if="freezeError" class="text-sm text-red">{{ freezeError }}</span>
+        <span v-else-if="freezePhase" class="text-sm text-text3">
+          {{ freezePhase === 'frozen'
+             ? loc.t('settings.freezeNow', 'Сейчас: показаны только итоговые')
+             : loc.t('settings.freezeLive', 'Сейчас: оценки видны как обычно') }}
+        </span>
+      </div>
+    </Card>
+
+    <!-- Второй фактор входа. ⚠️ БЕЗ v-if по устройству: код из приложения работает где
+         угодно. НО НЕ У АДМИНИСТРАТОРА (06.09.2026) — здесь стояло обратное, «ему он
+         ОБЯЗАТЕЛЕН», и это перестало быть правдой: обязательность снята, а `mfa.is_active`
+         для роли `admin` возвращает False, то есть заведённый фактор не действует. Карточка
+         осталась бы тумблером, который включается и заведомо ничего не делает.
+         Довод Влада: «кто угодно может добавить свой аутентификатор и входить в админку» —
+         при нескольких администраторах фактор не защищает, а лишь создаёт видимость. -->
+    <Card v-if="!isAdminRole" id="set-mfa" :class="sec('security')" :title="loc.t('settings.mfa', 'Второй фактор входа')"
           :subtitle="loc.t('settings.mfaHint', 'Одноразовый код из приложения-аутентификатора в дополнение к паролю')">
       <MfaCard />
     </Card>

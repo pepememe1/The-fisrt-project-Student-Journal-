@@ -120,19 +120,43 @@ function teachersFor(subject) {
 
 const showForm = ref(false)
 const editing = ref(null)
-const form = ref({ name: '', subjects: [], category: 'college' })
+// 🎓 КУРС И ГОД ПОСТУПЛЕНИЯ — ОДНО ЧИСЛО В ДВУХ ВИДАХ (06.09.2026, требование Влада).
+// Администратор знает КУРС, системе нужен ГОД ПОСТУПЛЕНИЯ: от него считаются курс,
+// семестр, ЗЕТ и ключи часов. Поэтому поля два, но они связаны — правишь одно, второе
+// пересчитывается. Формула на сервере (`study_hours.enrollment_year_for_course`); здесь
+// та же арифметика ради мгновенного отклика, а решает всё равно сервер.
+const form = ref({ name: '', subjects: [], category: 'college', course: 1, enrollment_year: null, specialty_code: '' })
+// Учебный год берём из УЖЕ загружаемого термина (`loadTerm` выше): год поступления
+// считается от него, а не от календарной даты браузера — границу 1 сентября продукт
+// двигал уже трижды, и вторая её копия здесь разошлась бы молча.
+const termYear = computed(() => currentTerm.value?.year || '')
+const termStartYear = computed(() => Number(String(termYear.value).split('/')[0]) || new Date().getFullYear())
+function yearFromCourse(c) { return termStartYear.value - (Number(c) - 1) }
+function courseFromYear(y) { return termStartYear.value - Number(y) + 1 }
+function onCourseInput(v) {
+  form.value.course = Number(v) || 1
+  form.value.enrollment_year = yearFromCourse(form.value.course)
+}
+function onYearInput(v) {
+  form.value.enrollment_year = Number(v) || null
+  if (form.value.enrollment_year) form.value.course = courseFromYear(form.value.enrollment_year)
+}
 const saving = ref(false)
 const formError = ref('')
 const importing = ref(false)
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', subjects: [], category: 'college' }
+  form.value = { name: '', subjects: [], category: 'college', course: 1,
+                 enrollment_year: yearFromCourse(1), specialty_code: '' }
   formError.value = ''; showForm.value = true
 }
 function openEdit(g) {
   editing.value = g.name
-  form.value = { name: g.name, subjects: [...(g.subjects || [])], category: g.category || 'college' }
+  form.value = { name: g.name, subjects: [...(g.subjects || [])], category: g.category || 'college',
+                 enrollment_year: g.enrollment_year || null,
+                 course: g.enrollment_year ? courseFromYear(g.enrollment_year) : 1,
+                 specialty_code: g.specialty_code || '' }
   formError.value = ''; showForm.value = true
 }
 function toggleSubject(s) {
@@ -147,7 +171,19 @@ async function save() {
   saving.value = true; formError.value = ''
   try {
     if (editing.value) await adminApi.updateGroup(editing.value, { subjects: f.subjects, category: f.category })
-    else await adminApi.createGroup({ name: f.name.trim(), subjects: f.subjects, category: f.category })
+    else {
+      const { data } = await adminApi.createGroup({
+        name: f.name.trim(), subjects: f.subjects, category: f.category,
+        course: f.course, enrollment_year: f.enrollment_year,
+        specialty_code: (f.specialty_code || '').trim(),
+      })
+      //⚠️ Отказ учебного плана ПОКАЗЫВАЕМ, но группу не теряем: она уже создана, и
+      //молчание оставило бы админа с пустым списком предметов без объяснения причины.
+      if (data?.plan_error) toast.error(data.plan_error)
+      else if (data?.subjects_added) {
+        toast.success(locale.t('adminGroups.planPulled', { n: data.subjects_added }))
+      }
+    }
     showForm.value = false; await reload()
   } catch (e) { formError.value = e?.response?.data?.detail || locale.t('adminGroups.saveFailed', 'Не удалось сохранить') }
   finally { saving.value = false }
@@ -652,6 +688,30 @@ async function importParsed() {
           {{ locale.t('adminGroups.scheduleImportExplain', 'Заводит группу как каталожную запись, связанную с расписанием портала. Предметы подставятся из её расписания; часов/учебного плана/журнала для этой категории нет (для колледжа их даёт «Добавить группу» / «Обновить группы»).') }}
         </p>
         <div class="space-y-3">
+          <!-- 🎓 Курс и год поступления — одно число в двух видах: правишь одно, второе
+               пересчитывается. Хранится ГОД (курс растёт сам по календарю), но вводить
+               удобнее КУРС — его администратор знает про группу сразу. -->
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block"><span class="mb-1 block text-tiny uppercase text-text3">{{ locale.t('adminGroups.courseLabel', 'Курс') }}</span>
+              <input type="number" min="1" max="6" :value="form.course" :disabled="!!editing"
+                     @input="onCourseInput($event.target.value)"
+                     class="h-10 w-full rounded-sm border border-border2 bg-card2 px-3 text-sm text-text outline-none focus:border-accent disabled:opacity-60" />
+            </label>
+            <label class="block"><span class="mb-1 block text-tiny uppercase text-text3">{{ locale.t('adminGroups.enrollmentYearLabel', 'Год поступления') }}</span>
+              <input type="number" min="2000" max="2100" :value="form.enrollment_year" :disabled="!!editing"
+                     @input="onYearInput($event.target.value)"
+                     class="h-10 w-full rounded-sm border border-border2 bg-card2 px-3 text-sm text-text outline-none focus:border-accent disabled:opacity-60" />
+            </label>
+          </div>
+          <!-- 📚 Программа обучения подтягивается САМА по коду специальности из учебного
+               плана ВСГУТУ. Поле необязательное: без него группа заводится как раньше, с
+               ручным списком предметов ниже. -->
+          <label v-if="!editing" class="block">
+            <span class="mb-1 block text-tiny uppercase text-text3">{{ locale.t('adminGroups.specialtyLabel', 'Код специальности') }}</span>
+            <input v-model="form.specialty_code" placeholder="09.02.07"
+                   class="h-10 w-full rounded-sm border border-border2 bg-card2 px-3 text-sm text-text outline-none focus:border-accent" />
+            <span class="mt-1 block text-tiny text-text3">{{ locale.t('adminGroups.specialtyHint', 'Заполните — предметы и часы подтянутся из учебного плана') }}</span>
+          </label>
           <label class="block"><span class="mb-1 block text-tiny uppercase text-text3">{{ locale.t('adminGroups.categoryLabel', 'Категория') }}</span>
             <select v-model="scheduleImportCategory"
                     class="h-10 w-full rounded-sm border border-border2 bg-card2 px-3 text-sm text-text outline-none focus:border-accent">

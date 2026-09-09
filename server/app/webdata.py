@@ -85,6 +85,41 @@ def student_records(db, surname: str, name: str, group: str | None = None,
     return {lid: g for lid, g in rows if base_lesson_id(lid) in allowed}
 
 
+def student_visible_records(db, surname: str, name: str, group: str | None = None,
+                            cfg=None, today=None) -> dict:
+    """Оценки студента ГЛАЗАМИ СТУДЕНТА — с учётом фазы учебного года.
+
+    🔥 ЕДИНСТВЕННАЯ дверь для студенческих и родительских экранов (06.09.2026). Правило
+    «после сессии видны только итоговые» читают витрина, журнал, статистика, ЗЕТ, долги,
+    Вектор и ачивки — восемь мест. Разложить условие по ним значило бы восемь мест, где
+    однажды забудут, а первое забытое здесь — чужой семестр в среднем балле, то есть ровно
+    то, от чего правило и заведено (см. `grade_policy`).
+
+    ⚠️ Преподаватель, куратор и администратор зовут ОБЫЧНЫЙ `student_records`: им нужна
+    полная картина — вести журнал, разбирать долги, смотреть архив по семестрам. Сторож
+    `test_grade_policy.py` следит, чтобы студенческие роутеры не ходили мимо этой функции.
+    """
+    from datetime import date
+    from . import grade_policy
+    cfg = cfg if cfg is not None else load_config(db)
+    _ty, ts = current_term(cfg)
+    ph = grade_policy.phase(today or date.today(), ts, cfg.get("grades_freeze_date"))
+    return grade_policy.visible_records(student_records(db, surname, name, group), ph)
+
+
+def grades_phase(db, cfg=None, today=None) -> str:
+    """Фаза показа оценок для СТУДЕНТА — чтобы интерфейс мог объяснить, почему пусто.
+
+    Молчаливо пустой журнал читается как поломка; подпись «идёт сессия, показаны итоговые»
+    объясняет то же самое состояние и не заставляет никого искать несуществующий сбой.
+    """
+    from datetime import date
+    from . import grade_policy
+    cfg = cfg if cfg is not None else load_config(db)
+    _ty, ts = current_term(cfg)
+    return grade_policy.phase(today or date.today(), ts, cfg.get("grades_freeze_date"))
+
+
 def current_term(cfg: dict) -> tuple:
     """Текущий учебный термин (год, семестр) из config, иначе — дефолт по дате.
     Год «YYYY/YYYY+1», семестр 1 (осень) | 2 (весна).
@@ -927,7 +962,42 @@ def teacher_assignments(db, teacher_id: str, year: str, semester,
     #точного скоупа цел — появилось хоть одно назначение, и работают ТОЛЬКО они (return
     #выше), поэтому «препод видит чужие группы» не возвращается. Это мост на время ввода
     #данных, а не режим: снимается удалением этой ветки, когда назначения расставлены.
-    return _drop_subjects_outside_current_plan(db, _assignments_fallback(db, teacher_id), year, semester)
+    #
+    #🔥 НО У МОСТА НЕ БЫЛО ПЕРИОДА, И ЭТО ДЕРЖАЛО ПРЕПОДАВАТЕЛЯ НА ПРОШЛОМ КУРСЕ
+    #(05.09.2026). `_assignments_fallback` собирает пары из `Lesson` БЕЗ фильтра по
+    #термину, поэтому после смены курса преподаватель продолжал видеть прошлогодние
+    #группы как действующие — «сейчас преподы не открепляются» из жалобы Влада. Сузить
+    #мост глобально до текущего термина нельзя: сразу после перевода текущих занятий нет
+    #НИ У КОГО, и все разом ушли бы во вторую ветку фолбэка — «все группы, где числится
+    #мой предмет», то есть весь колледж. Поэтому мост выключается ПОГРУППНО и только
+    #там, где администратор уже принял решение (см. course_rollover.advance).
+    return _drop_subjects_outside_current_plan(
+        db, _drop_groups_with_explicit_assignments(
+            db, _assignments_fallback(db, teacher_id), year, semester),
+        year, semester)
+
+
+def _drop_groups_with_explicit_assignments(db, pairs: list, year: str, semester) -> list:
+    """Убрать из моста группы, переведённые на новый курс.
+
+    У такой группы «нет строки с моим id» означает «мне тут не назначено», а не «данные
+    ещё не ввели», — и мост, придуманный против пустого журнала у всех сразу, здесь
+    работает против своей же цели: возвращает преподавателю прошлогоднюю нагрузку.
+
+    ⚠️ Спрашиваем ОДИН раз на группу: функция стоит на пути каждого запроса кабинета
+    преподавателя, а групп в паре может быть десяток.
+    """
+    if not pairs:
+        return pairs
+    from . import course_rollover as CR
+    cache = {}
+    out = []
+    for group, subject in pairs:
+        if group not in cache:
+            cache[group] = CR.assignments_must_be_explicit(db, group, year, semester)
+        if not cache[group]:
+            out.append((group, subject))
+    return out
 
 
 def _drop_subjects_outside_current_plan(db, pairs: list, year: str, semester) -> list:

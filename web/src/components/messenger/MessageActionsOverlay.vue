@@ -1,11 +1,29 @@
 <script setup>
 // MessageActionsOverlay — контекстное меню действий над сообщением (как в Telegram).
-// Появляется по тапу на сообщение рядом с ним. Набор кнопок зависит от прав
-// (своё/чужое, закреплено ли, удалено ли) — см. MESSENGER-PLAN.md §6.8. Эмитит выбранное
-// действие наверх (ChatThread выполняет), сам ничего не делает с данными.
+// Набор кнопок решает НЕ этот файл, а `utils/messageMenu.js`: правило «что показывать»
+// зависит от прав, вида беседы и от того, выделен ли текст, — и проверяется числами
+// (`web/tests/messageMenu.test.mjs`), а не глазами по скриншоту. Оверлей эмитит
+// выбранное действие наверх (ChatThread выполняет), сам ничего с данными не делает.
+//
+// 🔥 ПОЗИЦИЯ БОЛЬШЕ НЕ УГАДЫВАЕТСЯ ЧИСЛОМ (05.09.2026, жалоба Влада: «меню уезжает за
+// край окна, если сообщение внизу»). Здесь стояло `Math.min(y, innerHeight - 360)`, то
+// есть высота меню объявлялась константой 360 — а она собирается из пунктов по правам
+// плюс две строки реакций и гуляет вдвое. Теперь меню ИЗМЕРЯЕТСЯ после отрисовки, и
+// куда его класть, решает `utils/menuPlacement.js`: не влезло вниз — разворачиваем вверх,
+// не влезло никуда — прижимаем к верхнему краю и даём меню собственную прокрутку.
+// Обрезать снизу нельзя: там «Удалить» и «Пожаловаться», ради которых меню и открывают.
+//
+// ⚠️ Первый кадр рисуем НЕВИДИМЫМ (`opacity-0`): пока размер неизвестен, меню стояло бы
+// не на месте и прыгало на глазах. Один кадр невидимости человек не замечает, прыжок —
+// замечает всегда.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Reply, Pin, PinOff, Copy, Forward, Trash2, ListChecks, Flag, AlarmClock, Languages, Volume2, SmilePlus } from '@lucide/vue'
+import {
+  Reply, Pin, PinOff, Copy, Forward, Trash2, ListChecks, Flag, AlarmClock, Languages,
+  Volume2, SmilePlus, MoreHorizontal, Quote, Link2,
+} from '@lucide/vue'
 import { useLocaleStore } from '@/stores/locale'
+import { menuMaxHeight, placeMenu } from '@/utils/menuPlacement'
+import { messageMenuItems, selectionMenuItems } from '@/utils/messageMenu'
 
 const locale = useLocaleStore()
 
@@ -17,6 +35,13 @@ const props = defineProps({
   // translate-стор) — только чтобы подписать пункт «Перевести»/«Скрыть перевод»,
   // сам оверлей переводом не занимается (см. докстринг файла).
   translated: { type: Boolean, default: false },
+  // Выделенный внутри сообщения текст. Не пусто — меню становится «телеграмным»:
+  // «Ответить с цитатой», «Копировать выделенное» и т. д. (снимки 02/03 задания).
+  selection: { type: String, default: '' },
+  // Вид беседы и права — от них зависит СОСТАВ меню по выделению (см. messageMenu.js).
+  kind: { type: String, default: 'direct' },
+  canPin: { type: Boolean, default: true },
+  canLink: { type: Boolean, default: false },
 })
 const emit = defineEmits(['pick', 'react', 'close'])
 
@@ -24,143 +49,130 @@ const emit = defineEmits(['pick', 'react', 'close'])
 const REACTIONS = ['👍', '✅', '❤️', '😂', '👀', '🔥', '💯', '❓', '📌']
 
 const m = computed(() => props.message)
+const hasSelection = computed(() => !!props.selection.trim())
 
-/**
- * 🔥 ВЫСОТУ МЕНЮ МЕРЯЕМ, А НЕ ПРЕДПОЛАГАЕМ (07.09.2026).
- *
- * Здесь стояло `Math.min(y, innerHeight - 360)` — то есть высота считалась постоянной и
- * равной 360 px. Настоящая зависит от набора пунктов (их от 3 до 12, плюс две строки
- * реакций) и на обычном телефоне 360×640 доходит до 405: нижний пункт «Удалить» уезжал
- * за край экрана, и добраться до него было НЕЧЕМ — прокрутки у меню тоже не было.
- * Замер воспроизведения: верх 280, низ 685 при экране 640.
- *
- * Хуже того, `Math.min` без нижней границы: на низком экране (клавиатура открыта,
- * ландшафт) `innerHeight - 360` уходит в минус, меню вылезало ВВЕРХ за край, и вместе с
- * ним пропадала строка реакций.
- *
- * ⚠️ Мерить надо ПОСЛЕ отрисовки — до неё высоты не существует. Поэтому положение живёт
- * в ref и уточняется в `onMounted`/`nextTick`, а не вычисляется одним `computed`. Первый
- * кадр рисуется по осторожной оценке, чтобы меню не мигало из угла.
- */
-const HALF = 240                    // ширина меню (w-56 = 224) + запас
-const GUESS_H = 380                 // оценка до первого замера
-const EDGE = 8                      // безопасный отступ от краёв экрана
+// Подписи и значки — ОДНОЙ таблицей по ключу действия. Так состав меню (messageMenu.js)
+// и его вид не могут разъехаться: нет подписи — нет и пункта, это видно сразу.
+const LABELS = {
+  reply: () => ({ label: locale.t('msgAction.reply', 'Ответить'), icon: Reply }),
+  'quote-reply': () => ({ label: locale.t('msgAction.quoteReply', 'Ответить с цитатой'), icon: Quote }),
+  copy: () => ({ label: locale.t('msgAction.copy', 'Копировать текст'), icon: Copy }),
+  'copy-selection': () => ({ label: locale.t('msgAction.copySelection', 'Копировать выделенное'), icon: Copy }),
+  'copy-link': () => ({ label: locale.t('msgAction.copyLink', 'Копировать ссылку на сообщение'), icon: Link2 }),
+  forward: () => ({ label: locale.t('forward.title', 'Переслать'), icon: Forward }),
+  pin: () => ({ label: locale.t('messenger.pin', 'Закрепить'), icon: Pin }),
+  unpin: () => ({ label: locale.t('messenger.unpin', 'Открепить'), icon: PinOff }),
+  delete: () => ({ label: locale.t('common.delete'), icon: Trash2, danger: true }),
+  report: () => ({ label: locale.t('msgAction.report', 'Пожаловаться'), icon: Flag, danger: true }),
+  select: () => ({ label: locale.t('msgAction.select', 'Выделить'), icon: ListChecks }),
+  speak: () => ({ label: locale.t('msgAction.speak', 'Зачитать сообщение'), icon: Volume2 }),
+  remind: () => ({ label: locale.t('msgAction.remind', 'Напомнить'), icon: AlarmClock }),
+  'reactions-info': () => ({ label: locale.t('msgAction.reactionsInfo', 'Реакции'), icon: SmilePlus }),
+  translate: () => ({
+    label: props.translated
+      ? locale.t('msgAction.hideTranslation', 'Скрыть перевод')
+      : locale.t('msgAction.translate', 'Перевести'),
+    icon: Languages,
+  }),
+}
+const decorate = (keys) => keys.map((key) => ({ key, ...LABELS[key]() })).filter((it) => it.label)
+
+// Меню по выделению — ПЛОСКОЕ, без «Ещё»: в нём и так шесть строк, как в Telegram.
+const plan = computed(() => (hasSelection.value
+  ? { primary: selectionMenuItems(m.value, { kind: props.kind, canPin: props.canPin, canLink: props.canLink }), more: [] }
+  : messageMenuItems(m.value)))
+const primary = computed(() => decorate(plan.value.primary))
+const more = computed(() => decorate(plan.value.more))
+
+const showMore = ref(false)
+// Раскрытие «Ещё» меняет высоту — значит меню надо ПЕРЕСТАВИТЬ, иначе оно уедет за край
+// ровно тем же способом, от которого мы и лечимся.
+watch(showMore, () => nextTick(reposition))
 
 const box = ref(null)
-const pos = ref({ top: 0, left: 0 })
-const maxH = ref(0)
+const pos = ref(null)          // null — ещё не измерили, показывать нельзя
+const maxH = ref(600)
 
-function viewport() {
-  if (typeof window === 'undefined') return { w: 1200, h: 800 }
-  //visualViewport учитывает ЭКРАННУЮ КЛАВИАТУРУ: без него на телефоне меню считает
-  //доступной высоту, половину которой занимает клавиатура.
-  const vv = window.visualViewport
-  return { w: vv?.width || window.innerWidth, h: vv?.height || window.innerHeight }
+function reposition() {
+  const el = box.value
+  if (!el) return
+  // ⚠️ visualViewport, а НЕ innerHeight: при открытой экранной клавиатуре
+  // innerHeight по-прежнему считает высоту всего окна, половину которого
+  // клавиатура уже занимает — меню разворачивалось бы вниз, под неё, и
+  // нижние пункты («Удалить», «Пожаловаться») снова оказались бы недоступны.
+  // На настольном браузере visualViewport совпадает с innerWidth/Height.
+  const vp = window.visualViewport
+  const vw = vp ? vp.width : window.innerWidth
+  const vh = vp ? vp.height : window.innerHeight
+  maxH.value = menuMaxHeight(vh)
+  const r = el.getBoundingClientRect()
+  pos.value = placeMenu({ x: props.x, y: props.y, w: r.width, h: r.height, vw, vh })
 }
 
-function place() {
-  const { w, h } = viewport()
-  const own = box.value?.offsetHeight || GUESS_H
-  //Меню выше экрана целиком — отдаём ему всё, что есть, и включаем прокрутку внутри.
-  const avail = h - EDGE * 2
-  maxH.value = own > avail ? avail : 0
-  const height = Math.min(own, avail)
-  //Клампим С ОБЕИХ сторон: верхняя граница нужна не меньше нижней (см. докстринг).
-  pos.value = {
-    top: Math.max(EDGE, Math.min(props.y, h - height - EDGE)),
-    left: Math.max(EDGE, Math.min(props.x, w - HALF - EDGE)),
-  }
-}
+onMounted(() => {
+  nextTick(reposition)
+  //Поворот телефона и появление экранной клавиатуры меняют окно под уже открытым меню.
+  window.addEventListener('resize', reposition)
+})
+onBeforeUnmount(() => window.removeEventListener('resize', reposition))
+watch(() => [props.x, props.y, props.selection], () => nextTick(reposition))
 
 const style = computed(() => ({
-  top: `${pos.value.top}px`,
-  left: `${pos.value.left}px`,
-  //0 означает «влезает целиком» — тогда ограничение не навязываем вовсе.
-  ...(maxH.value ? { maxHeight: `${maxH.value}px`, overflowY: 'auto' } : {}),
+  left: `${pos.value ? pos.value.left : props.x}px`,
+  top: `${pos.value ? pos.value.top : props.y}px`,
+  maxHeight: `${maxH.value}px`,
 }))
-
-onMounted(async () => {
-  place()
-  await nextTick()
-  place()                            // теперь высота настоящая
-  if (typeof window !== 'undefined') {
-    window.visualViewport?.addEventListener('resize', place)
-    window.addEventListener('resize', place)
-  }
-})
-
-onBeforeUnmount(() => {
-  if (typeof window === 'undefined') return
-  window.visualViewport?.removeEventListener('resize', place)
-  window.removeEventListener('resize', place)
-})
-
-//Набор пунктов зависит от прав и от того, показан ли перевод: изменился — высота другая.
-watch(() => [props.message?.id, props.translated], async () => {
-  await nextTick()
-  place()
-})
-
-// Список действий по правам (Фаза 3 — личные чаты).
-const items = computed(() => {
-  const d = m.value.deleted
-  const list = []
-  if (!d) list.push({ key: 'reply', label: locale.t('msgAction.reply', 'Ответить'), icon: Reply })
-  if (!d) list.push(m.value.pinned
-    ? { key: 'unpin', label: locale.t('messenger.unpin', 'Открепить'), icon: PinOff }
-    : { key: 'pin', label: locale.t('messenger.pin', 'Закрепить'), icon: Pin })
-  if (!d) list.push({ key: 'copy', label: locale.t('msgAction.copy', 'Копировать текст'), icon: Copy })
-  // Зачитать вслух — той же говорилкой, что у Вектора (§5.3). Только там, где есть что
-  // читать: у GIF/пустого текста после slash-команд озвучивать нечего.
-  if (!d && m.value.body) list.push({ key: 'speak', label: locale.t('msgAction.speak', 'Зачитать сообщение'), icon: Volume2 })
-  // «Реакции» (по аналогии с Message Info в Telegram) — только СВОИ сообщения: кто
-  // поставил реакцию и кто просмотрел, с временем. У чужого сообщения этот список не
-  // наш секрет — и технически, и по смыслу («кто прочитал» тут же снизу под своим же
-  // сообщением, как обычно).
-  if (!d && m.value.mine) list.push({ key: 'reactions-info', label: locale.t('msgAction.reactionsInfo', 'Реакции'), icon: SmilePlus })
-  //Перевод — только ЧУЖИХ сообщений (своё и так на языке, на котором написано);
-  //тот же переключатель, что у ссылки «перевести» под самим сообщением.
-  if (!d && !m.value.mine && m.value.body) {
-    list.push({ key: 'translate', label: props.translated ? locale.t('msgAction.hideTranslation', 'Скрыть перевод') : locale.t('msgAction.translate', 'Перевести'),
-               icon: Languages })
-  }
-  if (!d) list.push({ key: 'forward', label: locale.t('forward.title', 'Переслать'), icon: Forward })
-  // §D19: «Напомнить» показываем ВСЕГДА, а не только когда в тексте нашлась дата —
-  // человек может захотеть напомнить себе о сообщении без всякой даты. Разобранную из
-  // текста дату диалог просто подставит в поле как готовый вариант.
-  if (!d) list.push({ key: 'remind', label: locale.t('msgAction.remind', 'Напомнить'), icon: AlarmClock })
-  list.push({ key: 'select', label: locale.t('msgAction.select', 'Выделить'), icon: ListChecks })
-  list.push({ key: 'delete', label: locale.t('common.delete'), icon: Trash2, danger: true })
-  if (!m.value.mine && !d) list.push({ key: 'report', label: locale.t('msgAction.report', 'Пожаловаться'), icon: Flag, danger: true })
-  return list
-})
 </script>
 
 <template>
   <!-- Полупрозрачная подложка: клик мимо — закрыть -->
   <div class="fixed inset-0 z-40" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <!-- ⚠️ `overflow-hidden` убран: он и превращал не поместившиеся пункты в
-         недостижимые. Прокрутку включает `style` — но только когда меню правда не
-         влезает, иначе у короткого меню появлялась бы лишняя полоса. -->
     <div ref="box"
-         class="fixed z-50 w-56 rounded-xl border border-border2 bg-card py-1 shadow-card"
+         class="fixed z-50 w-60 overflow-y-auto overflow-x-hidden rounded-xl border border-border2 bg-card py-1 shadow-card transition-opacity"
+         :class="pos ? 'opacity-100' : 'opacity-0'"
          :style="style" @click.stop>
       <!-- §D3: быстрые реакции — строка эмодзи над списком действий (как в Telegram).
+           При выделенном тексте их НЕТ: там разговор про кусок текста, а реакция ставится
+           на всё сообщение — два разных адресата в одном меню только путают.
            flex-wrap — 9 эмодзи не помещаются в один ряд узкой панели, переносим на вторую. -->
-      <div v-if="!m.deleted" class="flex flex-wrap justify-center gap-0.5 border-b border-border px-1.5 py-1.5">
+      <div v-if="!m.deleted && !hasSelection"
+           class="flex flex-wrap justify-center gap-0.5 border-b border-border px-1.5 py-1.5">
         <button v-for="e in REACTIONS" :key="e" type="button"
                 @click="emit('react', e); emit('close')"
                 class="grid size-7 place-items-center rounded-md text-base transition-colors hover:bg-bg2">
           {{ e }}
         </button>
       </div>
-      <button v-for="it in items" :key="it.key" type="button"
+      <!-- Что именно процитируется — видно ДО нажатия. Иначе «Ответить с цитатой»
+           обещает неизвестно что, а выделение к этому моменту уже не на виду. -->
+      <p v-if="hasSelection" class="truncate border-b border-border px-3.5 py-1.5 text-[11px] text-text3">
+        «{{ selection.trim() }}»
+      </p>
+      <button v-for="it in primary" :key="it.key" type="button"
               @click="emit('pick', it.key); emit('close')"
               class="flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm transition-colors hover:bg-bg2"
               :class="it.danger ? 'text-red' : 'text-text'">
         <component :is="it.icon" class="size-4 shrink-0" :class="it.danger ? 'text-red' : 'text-text3'" />
         {{ it.label }}
       </button>
+      <!-- «Ещё» — не свалка, а второй уровень: сюда уехало то, за чем приходят редко
+           (зачитать, напомнить, перевод одного сообщения, реакции). Вырезать их совсем
+           значило бы чинить длину меню потерей возможностей. -->
+      <template v-if="more.length">
+        <button v-if="!showMore" type="button" @click.stop="showMore = true"
+                class="flex w-full items-center gap-3 border-t border-border px-3.5 py-2 text-left text-sm text-text3 transition-colors hover:bg-bg2">
+          <MoreHorizontal class="size-4 shrink-0" />
+          {{ locale.t('msgAction.more', 'Ещё') }}
+        </button>
+        <div v-else class="border-t border-border">
+          <button v-for="it in more" :key="it.key" type="button"
+                  @click="emit('pick', it.key); emit('close')"
+                  class="flex w-full items-center gap-3 px-3.5 py-2 text-left text-sm text-text transition-colors hover:bg-bg2">
+            <component :is="it.icon" class="size-4 shrink-0 text-text3" />
+            {{ it.label }}
+          </button>
+        </div>
+      </template>
     </div>
   </div>
 </template>

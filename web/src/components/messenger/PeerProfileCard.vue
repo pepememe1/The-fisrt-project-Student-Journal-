@@ -19,6 +19,7 @@
 // (defineExpose ниже), одним действием со сменой цвета/шрифта. Компонент editable=false
 // (чужой профиль) этого не касается — там ни «о себе», ни заметка не редактируются.
 import { ref, computed, onMounted, watch } from 'vue'
+import { resetDraft, syncDraft } from '@/utils/draftSync'
 import { Camera, Send, Pencil, ImageIcon, Film, Trash2 } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -176,10 +177,33 @@ function onGifPicked(item) {
 }
 
 // ── «О себе» (только editable — у чужого профиля это чистый текст) ──────────────────
-const draftBio = ref('')
+// 🔥 ЧЕРНОВИК ДОГОНЯЕТ СОХРАНЁННОЕ ЧЕРЕЗ `lastSyncedBio`, А НЕ ЧЕРЕЗ `bioDirty`
+// (06.09.2026, жалоба Влада: «иногда при выходе вылазит окошко „точно хотите выйти не
+// подтвердив действия", кнопки ни на что не влияют»).
+//
+// Здесь стояло `watch(() => profile.bio, (v) => { if (!bioDirty.value) draftBio.value = v })`.
+// Сторож читал `bioDirty`, а тот считается по УЖЕ НОВОМУ `profile.bio` — значит в момент
+// прихода настроек с сервера (а они приходят ПОСЛЕ монтирования карточки) условие всегда
+// ложно: черновик пуст, сохранённое непусто. Черновик так и оставался пустым, и
+// `isDirty` горел ВЕЧНО без единого нажатия. Отсюда и «иногда»: у кого «о себе» пустое,
+// тот ничего не замечал.
+//
+// ⚠️ И вторая половина ХУЖЕ первой: по кнопке «Сохранить» уезжал ПУСТОЙ bio — то есть
+// диалог, предлагавший сохранить несуществующие правки, СТИРАЛ настоящий текст «о себе».
+// Со стороны это и выглядит как «кнопка ничего не делает»: поле и так показывало пустоту.
+//
+// Правило вынесено в `utils/draftSync.js` и проверяется числами: тот же приём с «последним
+// синхронизированным значением» уже стоял в `Profile.vue` для цвета и шрифта и был там
+// написан ВЕРНО — то есть правило одно, а реализаций было две, и разошлись они молча.
+const draftBio = ref(profile.bio)
+let lastSyncedBio = profile.bio
 const bioDirty = computed(() => props.editable && draftBio.value !== profile.bio)
-onMounted(() => { draftBio.value = profile.bio })
-watch(() => profile.bio, (v) => { if (!bioDirty.value) draftBio.value = v })
+onMounted(() => { const r = resetDraft(profile.bio); draftBio.value = r.draft; lastSyncedBio = r.lastSynced })
+watch(() => profile.bio, (v) => {
+  const next = syncDraft({ draft: draftBio.value, lastSynced: lastSyncedBio }, v)
+  draftBio.value = next.draft
+  lastSyncedBio = next.lastSynced
+})
 
 // ── Заметка (в ОБОИХ режимах — всегда про shown.value.id) ───────────────────────────
 const note = ref('')
@@ -225,7 +249,11 @@ async function commit() {
   await Promise.all(tasks)
 }
 function discard() {
-  draftBio.value = profile.bio
+  //Метку двигаем вместе с черновиком — иначе после «Отменить» первое же обновление с
+  //сервера снова разошлось бы с черновиком и зажгло «есть несохранённые изменения».
+  const r = resetDraft(profile.bio)
+  draftBio.value = r.draft
+  lastSyncedBio = r.lastSynced
   note.value = noteSaved.value
 }
 // Левая колонка Profile.vue ведёт в те же самые действия — теперь их два вида (картинка

@@ -11,26 +11,17 @@
  * повторяется из `setInterval` — с интервалом фоновая вкладка растянула бы сигнал или
  * пропустила его вовсе.
  *
- * ⚠️ Автоплей: браузер разрешает звук только после жеста человека. Контекст будим на
- * первом же клике (`primeAudio` в приложении). Если он всё-таки заблокирован — молчим:
- * окно с истёкшим таймером человек всё равно увидит, и это лучше, чем сыпать ошибками.
+ * ⚠️ Контекст ОБЩИЙ на весь продукт (`utils/audioContext.js`), а не свой: раньше здесь
+ * был четвёртый по счёту, и хотя именно его-то и будили, соседи (пинг, бубнёж) со своими
+ * молчали. Один контекст — одно место, где его будят.
  */
-let _ctx = null
+import { withAudio } from './audioContext'
+
 let _stop = null
-
-function _context() {
-  if (_ctx) return _ctx
-  const Ctor = window.AudioContext || window.webkitAudioContext
-  if (!Ctor) return null
-  try { _ctx = new Ctor() } catch { _ctx = null }
-  return _ctx
-}
-
-/** Разбудить звук первым жестом человека. Зовётся один раз при старте приложения. */
-export function primeAlarmAudio() {
-  const ctx = _context()
-  if (ctx && ctx.state === 'suspended') { try { ctx.resume() } catch { /* noop */ } }
-}
+// Поколение: `withAudio` планирует звук ПОСЛЕ пробуждения контекста, то есть уже в
+// промисе. Без счётчика «выключить» между вызовом и планированием не сработало бы —
+// гудки завелись бы уже после того, как человек нажал «ОК».
+let _gen = 0
 
 /**
  * Запустить сигнал. Играет до `stopAlarm()` либо до конца отведённого времени —
@@ -38,11 +29,9 @@ export function primeAlarmAudio() {
  */
 export function playAlarm({ seconds = 60 } = {}) {
   stopAlarm()
-  const ctx = _context()
-  if (!ctx) return
-  try {
-    if (ctx.state === 'suspended') ctx.resume()
-    const started = ctx.currentTime
+  const mine = ++_gen
+  withAudio((ctx, started) => {
+    if (mine !== _gen) return          //успели выключить, пока будился контекст
     const nodes = []
     // Тройной гудок раз в секунду — узнаваемый рисунок будильника, не похожий на пинг
     // отметки. Ставим ВСЮ последовательность заранее: см. про фоновую вкладку в шапке.
@@ -64,11 +53,12 @@ export function playAlarm({ seconds = 60 } = {}) {
       }
     }
     _stop = () => { for (const n of nodes) { try { n.stop() } catch { /* уже остановлен */ } } }
-  } catch { /* звук — не критичная часть напоминания */ }
+  })
 }
 
 /** Выключить сигнал (кнопка «ОК» в окне истёкшего таймера). */
 export function stopAlarm() {
+  _gen += 1
   if (_stop) { try { _stop() } catch { /* noop */ } }
   _stop = null
 }

@@ -328,7 +328,11 @@ def _ensure_message_addon_columns():
               ("body_format", "VARCHAR DEFAULT 'markdown'"),
               ("client_nonce", "VARCHAR DEFAULT ''"),
               ("attachment_id", "VARCHAR DEFAULT ''"),
-              ("mentions", "JSON"))
+              ("mentions", "JSON"),
+              #«Ответить с цитатой» (05.09.2026): выделенный кусок исходного сообщения.
+              #Пусто у всех уже лежащих строк — и это верный исход: старый ответ цитирует
+              #оригинал целиком, как и цитировал.
+              ("reply_quote", "VARCHAR DEFAULT ''"))
     with engine.begin() as conn:
         for name, coltype in wanted:
             if name not in columns:
@@ -520,6 +524,10 @@ def _ensure_group_archive_columns():
         ("archived_reason", "VARCHAR DEFAULT ''"),
         ("last_course", "INTEGER"),
         ("last_course_year", "VARCHAR DEFAULT ''"),
+        #Перевод на новый курс (05.09.2026): термин, начиная с которого назначения
+        #преподавателей обязаны быть ЯВНЫМИ. Пусто — группу не переводили, мост
+        #`_assignments_fallback` работает как прежде (см. course_rollover.py).
+        ("assignments_reset_term", "VARCHAR DEFAULT ''"),
     ]
     with engine.begin() as conn:
         for name, coltype in adds:
@@ -616,10 +624,28 @@ def default_term() -> tuple:
     вручную селектором, это осознанный клик, а не автоматика по умолчанию.
 
     Единый источник дефолта для миграции и конфига (data/terms.py дублирует —
-    формула обязана совпадать ДО СИМВОЛА, иначе ключи term_grades разъедутся)."""
+    формула обязана совпадать ДО СИМВОЛА, иначе ключи term_grades разъедутся).
+
+    ⚠️ САМА ФОРМУЛА ЖИВЁТ В `term_for_date` (05.09.2026). Здесь остался только «какая
+    сейчас дата»: перевод группы на новый курс обязан спрашивать термин у ДАТЫ ЗАНЯТИЯ,
+    а не у сегодняшнего числа, и без выноса появилась бы ТРЕТЬЯ копия календаря — при
+    том что докстринг выше сам предупреждает, чем кончаются копии."""
     from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    y, m = now.year, now.month
+    return term_for_date(datetime.now(timezone.utc))
+
+
+def term_for_date(when) -> tuple:
+    """Учебный термин, которому принадлежит УКАЗАННАЯ дата: (год «YYYY/YYYY+1», 1|2).
+
+    Календарь — тот же, что описан в `default_term` (сен–дек и январь — осень, фев–авг —
+    весна). Отдельная функция нужна `course_rollover`: занятие без штампа термина надо
+    отнести к периоду, в котором оно РЕАЛЬНО было, а это знает только его дата.
+
+    ⚠️ Копий формулы быть не должно — `default_term()` зовёт эту же функцию. Иначе
+    «сегодняшний» и «датный» термины разошлись бы на границе 1 сентября, и занятие,
+    заведённое 31 августа, попало бы в один период, а посчиталось бы в другом.
+    """
+    y, m = when.year, when.month
     if m >= 9:
         return f"{y}/{y + 1}", 1
     if m == 1:

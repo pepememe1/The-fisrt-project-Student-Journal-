@@ -17,7 +17,7 @@ from app.db import (engine, _ensure_participant_state_columns,
                     _ensure_notify_event_columns, _ensure_group_category_column,
                     _ensure_user_password_set_at_column, _ensure_user_birthday_column,
                     _ensure_message_report_target_column, _ensure_audit_chain_columns,
-                    _ensure_conversation_avatar_column)
+                    _ensure_conversation_avatar_column, _ensure_message_addon_columns)
 
 
 def test_ensure_participant_state_columns_adds_role_columns_to_old_schema(client):
@@ -375,7 +375,12 @@ def test_group_archive_columns_are_added_to_an_old_schema():
     engine.dispose()
     after = {c["name"] for c in inspect(engine).get_columns("groups")}
     for col in ("archived", "archived_at", "archived_reason",
-                "last_course", "last_course_year"):
+                "last_course", "last_course_year",
+                #Перевод группы на новый курс (05.09.2026): без этой колонки
+                #`_assignments_fallback` возвращал бы преподавателю прошлогодние группы,
+                #то есть открепление осталось бы только на бумаге, а на боевой базе
+                #каждый её запрос падал бы на «no such column».
+                "assignments_reset_term"):
         assert col in after, f"миграция не добавила {col}"
 
     #Идемпотентность: второй прогон на уже мигрированной таблице не должен падать.
@@ -409,3 +414,40 @@ def test_schedule_override_subgroup_column_is_added_to_an_old_schema():
 
     #Идемпотентность: повтор на уже мигрированной таблице не должен падать.
     _ensure_schedule_override_subgroup_column()
+
+
+def test_message_reply_quote_column_is_added_to_an_old_schema(client):
+    """messages.reply_quote на СТАРОЙ схеме («ответить с цитатой», 05.09.2026).
+
+    Без ALTER-а КАЖДАЯ отправка сообщения падала бы «no such column» — то есть мессенджер
+    колледжа встал бы целиком на первом же деплое. Ветка «колонки не было» в свежей
+    тестовой базе не исполняется никогда (create_all создаёт таблицу сразу со всеми
+    полями), поэтому эмулируем старую схему явно.
+
+    ⚠️ Уже лежащие ответы обязаны пережить миграцию с ПУСТОЙ цитатой: пусто означает
+    «обычный ответ», и клиент показывает начало оригинала — ровно как показывал до правки.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS messages"))
+        conn.execute(text("""CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id VARCHAR,
+            sender_id VARCHAR, body VARCHAR, created_at VARCHAR, edited_at VARCHAR,
+            deleted_at VARCHAR, reply_to_id INTEGER DEFAULT 0,
+            fwd_from_sender_id VARCHAR, fwd_from_conv_id VARCHAR,
+            fwd_from_created_at VARCHAR, fwd_sender_name VARCHAR,
+            pinned BOOLEAN, pinned_at VARCHAR, pinned_by VARCHAR
+        )"""))
+        conn.execute(text("INSERT INTO messages (body, reply_to_id) VALUES ('старый ответ', 3)"))
+    engine.dispose()
+    before = {c["name"] for c in inspect(engine).get_columns("messages")}
+    assert "reply_quote" not in before
+
+    _ensure_message_addon_columns()
+    engine.dispose()
+    assert "reply_quote" in {c["name"] for c in inspect(engine).get_columns("messages")}
+    with engine.begin() as conn:
+        got = conn.execute(text("SELECT body, reply_quote FROM messages")).fetchone()
+    assert got[0] == "старый ответ"
+    assert not (got[1] or ""), "старому ответу подставили какую-то цитату"
+
+    _ensure_message_addon_columns()   # идемпотентность — второй вызов не падает
