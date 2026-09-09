@@ -218,7 +218,52 @@ def init_db():
     _ensure_quiz_kind_column()
     _ensure_audit_chain_columns()
     _ensure_conversation_avatar_column()
+    _ensure_hot_path_indexes()
     _migrate_slash_in_ids()
+
+
+#━━ ИНДЕКСЫ ГОРЯЧИХ ПУТЕЙ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#⚠️ ПОЧЕМУ ОТДЕЛЬНАЯ МИГРАЦИЯ, А НЕ ПРОСТО `index=True` В МОДЕЛИ.
+#`create_all` заводит индексы только вместе с НОВОЙ таблицей. На боевой базе, где
+#`messages` существует с самого мессенджера, дописанный в модель `index=True` не создаст
+#ничего и не скажет об этом ни слова — ровно та же грабля, что с новой КОЛОНКОЙ в
+#существующей таблице, и настолько же тихая. В свежей тестовой базе индекс появится сам,
+#поэтому зелёные тесты сами по себе тут ничего не доказывают.
+#
+#⚠️ Список ведётся ПО ЗАМЕРУ, а не «на всякий случай». Лишний индекс не бесплатен: он
+#замедляет запись и занимает место, а узкое место SQLite — именно ЗАПИСЬ. Каждая строка
+#ниже обязана называть, какой замер её оправдывает.
+_HOT_INDEXES = [
+    #Значок «N ответов» в тредах: `_attach_reply_counts` группирует по reply_to_id при
+    #открытии ЛЮБОЙ беседы. Замер 09.09.2026 (server/bench_messenger.py, профиль big,
+    #922 500 сообщений): 139 мс из 143 мс всего ответа. После индекса — доли миллисекунды.
+    ("messages", "ix_messages_reply_to_id", "reply_to_id"),
+]
+
+
+def _ensure_hot_path_indexes():
+    """Досоздать индексы горячих путей на УЖЕ СУЩЕСТВУЮЩЕЙ базе. Идемпотентно."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table, name, columns in _HOT_INDEXES:
+        try:
+            if table not in insp.get_table_names():
+                continue                     #таблицы ещё нет — create_all создаст с индексом
+            have = {i["name"] for i in insp.get_indexes(table)}
+        except Exception:
+            continue
+        if name in have:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS %s ON %s (%s)" % (name, table, columns)))
+            print("[db] создан индекс %s (%s.%s)" % (name, table, columns))
+        except Exception as e:
+            #Индекс — ускорение, а не условие работы: не смогли создать — работаем как
+            #раньше, но ГРОМКО, а не молча. Тихий отказ здесь означал бы, что причину
+            #медленной работы будут искать где угодно, кроме этого места.
+            print("[db] НЕ УДАЛОСЬ создать индекс %s: %s" % (name, e))
 
 
 def _ensure_conversation_avatar_column():

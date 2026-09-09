@@ -15,12 +15,32 @@
 
 ⚠️ Проверяем СВОЙСТВА, а не строки кода. У каждого теста есть обратный ход.
 """
+import sys
 import threading
 import time
 
 import pytest
 
+import desktop
 from sync import sync_runner
+
+
+# ⚠️ ПОДМЕНЯТЬ НАДО АТРИБУТ ПАКЕТА, А НЕ ЗАПИСЬ В `sys.modules` (найдено полным
+# прогоном 09.09.2026). Продукт делает `from desktop import local_mirror`, а эта форма
+# сначала берёт АТРИБУТ уже импортированного пакета и лишь при его отсутствии смотрит в
+# `sys.modules`. В одиночку файл проходил (пакет ещё не трогали, срабатывал запасной
+# путь), а в полном прогоне любой предыдущий тест успевал импортировать зеркало — и
+# подмена молча не действовала: звался НАСТОЯЩИЙ `mirror_once`, который без живой сессии
+# честно отвечает отказом. Два теста краснели при полностью исправном коде.
+#
+# 🔑 Правило шире этого файла: подменяй то, что читает ПОТРЕБИТЕЛЬ, тем же способом,
+# каким он это читает. Ровно тот же урок, что с `validate-agents.py`, разбиравшим YAML
+# не так, как настоящий загрузчик.
+def _put_mirror(monkeypatch, result):
+    """Подставить зеркало, возвращающее `result`, — так, как его увидит продукт."""
+    fake = type("M", (), {"mirror_once": staticmethod(lambda client=None: result)})
+    monkeypatch.setattr(desktop, "local_mirror", fake, raising=False)
+    monkeypatch.setitem(sys.modules, "desktop.local_mirror", fake)
 
 
 class _Mgr(sync_runner.SyncManager):
@@ -68,52 +88,37 @@ def test_stop_signal_belongs_to_the_run_not_to_the_manager():
     m.stop()
 
 
-def test_mirror_failure_is_recorded_not_swallowed():
+def test_mirror_failure_is_recorded_not_swallowed(monkeypatch):
     """`mirror_once` вернул ok=False — это обязано попасть в состояние синка."""
     m = sync_runner.SyncManager()
-    fake = type("M", (), {"mirror_once": staticmethod(
-        lambda client=None: {"ok": False, "error": "нет активной сессии с сервером"})})
-    import sys
-    sys.modules["desktop.local_mirror"] = fake
-    try:
-        m._mirror_for_vue()
-    finally:
-        sys.modules.pop("desktop.local_mirror", None)
+    _put_mirror(monkeypatch, {"ok": False, "error": "нет активной сессии с сервером"})
+    m._mirror_for_vue()
     assert m._mirror_error == "нет активной сессии с сервером", (
         "отказ зеркала выброшен — ровно тот дефект, ради которого тест написан")
 
 
-def test_mirror_success_clears_the_error_and_stamps_time():
+def test_mirror_success_clears_the_error_and_stamps_time(monkeypatch):
     m = sync_runner.SyncManager()
     m._mirror_error = "прошлая беда"
-    fake = type("M", (), {"mirror_once": staticmethod(
-        lambda client=None: {"ok": True, "rows": 7})})
-    import sys
-    sys.modules["desktop.local_mirror"] = fake
-    try:
-        m._mirror_for_vue()
-    finally:
-        sys.modules.pop("desktop.local_mirror", None)
+    _put_mirror(monkeypatch, {"ok": True, "rows": 7})
+    m._mirror_for_vue()
     assert m._mirror_error == "", "успех обязан снимать прежнюю жалобу"
     assert m._mirror_ok_at, "время последнего успеха обязано проставляться"
 
 
-def test_missing_mirror_module_is_not_reported_as_a_failure():
+def test_missing_mirror_module_is_not_reported_as_a_failure(monkeypatch):
     """Сборка без серверного пакета рядом — штатная. Вечная жалоба там, где всё
     работает как задумано, приучает не читать сигнал (правило проекта)."""
     m = sync_runner.SyncManager()
-    import sys
-    saved = sys.modules.pop("desktop.local_mirror", None)
-    real = sys.modules.pop("desktop", None)
-    sys.modules["desktop"] = type("D", (), {})()   # пакет без атрибута local_mirror
-    try:
-        m._mirror_for_vue()
-    finally:
-        sys.modules.pop("desktop", None)
-        if real is not None:
-            sys.modules["desktop"] = real
-        if saved is not None:
-            sys.modules["desktop.local_mirror"] = saved
+    # Убираем ОБА пути, которыми `from desktop import local_mirror` может найти модуль:
+    # атрибут пакета и запись в sys.modules. Уберёшь только второй — импорт удастся, и
+    # тест проверит не тот случай (так и было до 09.09.2026).
+    # ⚠️ Снятого атрибута МАЛО: `from desktop import local_mirror` тогда просто
+    # импортирует подмодуль с диска заново, и мы проверим не тот случай. `None` в
+    # sys.modules — штатный способ сказать импорту «этого модуля нет».
+    monkeypatch.delattr(desktop, "local_mirror", raising=False)
+    monkeypatch.setitem(sys.modules, "desktop.local_mirror", None)
+    m._mirror_for_vue()
     assert m._mirror_error == "", "отсутствие модуля — не беда копии"
 
 

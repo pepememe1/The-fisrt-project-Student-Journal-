@@ -10,7 +10,8 @@
 // всем сразу при открытых голосах, всем после завершения при включённом раскрытии.
 // Здесь его не вычисляют: не прислал `tally` — показывать нечего, и это не «спрятано в
 // интерфейсе», а не отдано вовсе.
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useSharedNow } from '@/utils/sharedClock'
 import { BarChart3, Check, Clock, Trophy } from '@lucide/vue'
 import { useLocaleStore } from '@/stores/locale'
 import { activitiesApi } from '@/api/endpoints'
@@ -38,13 +39,24 @@ const closed = computed(() => props.activity.status !== 'running' || expired.val
 
 // Срок окончания — как в Telegram. Считает клиент от присланного сервером времени:
 // тикать по сокету всем участникам ради подписи «осталось 4 мин» слишком дорого.
-const now = ref(Date.now())
-let tick = null
-onMounted(() => { tick = setInterval(() => { now.value = Date.now() }, 1000) })
-onBeforeUnmount(() => { if (tick) clearInterval(tick) })
-
+//
+// 🔑 Часы ОБЩИЕ и идут ровно пока есть что отсчитывать (B7 разбора 07.09.2026). Прежде
+// здесь стоял свой `setInterval` БЕЗУСЛОВНО: закрытый прошлогодний опрос в истории
+// беседы тикал ровно так же, как идущий, — и таких карточек в ленте столько, сколько
+// опросов провели за семестр.
+//
+// ⚠️ Три условия, и каждое отключает часы само по себе: опрос не идёт; срока нет вовсе
+// (тогда отсчитывать нечего — большинство опросов такие); срок уже вышел (`expired`
+// однажды став истинным, истинным и останется, даже если время замерло).
 const endsAt = computed(() => Date.parse(props.activity.ends_at || ''))
+const ticking = ref(props.activity.status === 'running'
+  && Number.isFinite(endsAt.value) && endsAt.value > Date.now())
+const now = useSharedNow(ticking)
 const expired = computed(() => Number.isFinite(endsAt.value) && endsAt.value <= now.value)
+watch([expired, () => props.activity.status, endsAt], () => {
+  ticking.value = props.activity.status === 'running'
+    && Number.isFinite(endsAt.value) && !expired.value
+})
 // Абсолютное время окончания («закончится в 12:42»), а не обратный отсчёт: конкретный
 // момент держать в уме не нужно, в отличие от «осталось 3 мин». Считает клиент в СВОЁМ
 // поясе от присланного сервером `ends_at`.

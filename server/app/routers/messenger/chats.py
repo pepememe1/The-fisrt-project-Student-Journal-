@@ -47,64 +47,120 @@ def _preview_out(msg, me_id: str, sender_name: str, att: dict = None) -> dict:
 @router.get("/chats")
 def list_chats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Беседы текущего пользователя: собеседник/заголовок, последнее сообщение, непрочитанные.
-    Закреплённые чаты — сверху, дальше по времени последнего сообщения (убыв.)."""
+    Закреплённые чаты — сверху, дальше по времени последнего сообщения (убыв.).
+
+    ━━ ЗАПРОСЫ ИДУТ ПАЧКАМИ, А НЕ ПО ОДНОМУ НА БЕСЕДУ (09.09.2026) ━━
+    Здесь был классический N+1, причём в САМОЙ ГОРЯЧЕЙ ручке продукта: список чатов
+    опрашивается раз в 3.5 с при живом сокете и чаще без него. На каждую беседу
+    отдельно спрашивались сама беседа, последнее сообщение, счётчик непрочитанного,
+    скан отметок, автор последнего сообщения, вложение и собеседник личного чата.
+
+    Замер (`server/bench_messenger.py`, профиль big — 3000 человек, 922 500 сообщений):
+    у преподавателя с девятью беседами **59 запросов и 36.9 мс**. При этом сам SQLite
+    тратил на них около 7 мс — остальные 30 мс уходили на обвязку: SQLAlchemy строит
+    объект на каждую строку, и делает это 59 раз вместо одного. То есть дело было не в
+    базе и не в языке, а в количестве работы.
+
+    ⚠️ Сокращение работы — ПЕРВЫЙ шаг, и его нельзя пропустить в пользу «перепишем на
+    другом языке»: быстрый язык, делающий ту же лишнюю работу, оставляет источник
+    нагрузки на месте (замечание Ярослава от 09.09.2026, и оно верное).
+
+    ⚠️ Границы поведения СОХРАНЕНЫ дословно, включая личные метки участника
+    (`cleared_upto_id`, `cleared_at`, `last_read_at`) — они разные у разных бесед,
+    поэтому в пакетных запросах приезжают ИЗ САМОЙ СТРОКИ УЧАСТНИКА через JOIN, а не
+    подставляются одним значением на всех. Подставить одно — самый вероятный способ
+    сломать это молча: у большинства людей метки совпадают, и расхождение всплыло бы
+    только у того, кто чистил переписку.
+    """
     parts = (db.query(ConversationParticipant)
              .filter(ConversationParticipant.user_id == user.id).all())
+    if not parts:
+        return {"chats": []}
     onl = _online_logins()
-    out = []
+    by_conv = {p.conversation_id: p for p in parts}
+    conv_ids = list(by_conv)
+
+    # ── одна пачка: сами беседы ────────────────────────────────────────────────────
+    convs = {c.id: c for c in db.query(Conversation)
+             .filter(Conversation.id.in_(conv_ids)).all()}
+
+    # ── последнее сообщение и счётчик: ТОЧЕЧНО, и это ЗАМЕР, а не небрежность ─────
+    # 🔥 Здесь стоял «правильный» пакетный вариант — один `MAX(id) GROUP BY` и один
+    # `COUNT(*) GROUP BY` с JOIN к строке участника вместо одиннадцати точечных запросов.
+    # Он ОКАЗАЛСЯ ВДВОЕ МЕДЛЕННЕЕ (замер 09.09.2026: 5.0 + 5.6 мс против 1.2 + 3.9 мс), и
+    # причина не в планировщике — планы у обоих индексные:
+    #   • точечный «последнее сообщение» — это `ORDER BY id DESC LIMIT 1` по индексу
+    #     (conversation_id, rowid): база идёт по индексу с конца и ОСТАНАВЛИВАЕТСЯ НА
+    #     ПЕРВОЙ СТРОКЕ. Стоимость не зависит от размера беседы;
+    #   • `MAX(id) ... GROUP BY` такого права не имеет: он обязан просмотреть ВСЮ группу
+    #     и сложить результат во временное B-дерево (`USE TEMP B-TREE FOR GROUP BY`).
+    #
+    # ⚠️ Отсюда правило, которое стоит помнить: «N+1 всегда хуже одного запроса» — НЕ
+    # правда. Точечный запрос, который упирается в индекс и берёт одну строку, дешевле
+    # агрегата по всей группе, сколько бы раз его ни повторили. Дорого не число
+    # запросов, а число ПРОСМОТРЕННЫХ СТРОК.
+    last_by_conv = {}
+    unread_by_conv = {}
     for p in parts:
-        conv = db.query(Conversation).filter(Conversation.id == p.conversation_id).first()
-        if conv is None:
-            continue
-        #Всё, что старше моей метки очистки, для меня не существует (удалённая переписка).
-        lastq = db.query(Message).filter(Message.conversation_id == conv.id)
+        base = db.query(Message).filter(Message.conversation_id == p.conversation_id)
         if p.cleared_upto_id:
-            lastq = lastq.filter(Message.id > p.cleared_upto_id)
-        if p.cleared_at:                     #legacy-строки, очищенные до появления id-границы
-            lastq = lastq.filter(Message.created_at > p.cleared_at)
-        last = lastq.order_by(Message.id.desc()).first()
-        #Чат удалён у меня и с тех пор ничего не приходило — не показываем его в списке.
-        #Появится новое сообщение — вернётся сам (см. _unhide_participants).
-        if p.hidden and last is None:
-            continue
-        #Непрочитанное: чужие сообщения позже моей метки прочтения, не удалённые у всех.
+            base = base.filter(Message.id > p.cleared_upto_id)
+        if p.cleared_at:                     #legacy-строки (очищены до появления id-границы)
+            base = base.filter(Message.created_at > p.cleared_at)
+        last = base.order_by(Message.id.desc()).first()
+        if last is not None:
+            last_by_conv[p.conversation_id] = last
         #Служебные события («вступил в беседу», «закреплено») в счётчик НЕ идут: это не
-        #обращение к тебе, а отметка в ленте, а красный кружок непрочитанного заставляет
-        #открыть чат — в канале на сотню читателей он не гас бы никогда.
-        unread = (db.query(Message)
-                  .filter(Message.conversation_id == conv.id,
-                          Message.sender_id != user.id,
-                          Message.kind != "system",
-                          Message.deleted_at == "",
-                          Message.created_at > (p.last_read_at or ""),
-                          Message.created_at > (p.cleared_at or ""),
-                          Message.id > (p.cleared_upto_id or 0))
-                  .count())
-        #Имя автора последнего сообщения нужно списку чатов (в группе/канале строка
-        #выглядит как «Иванов: текст» — без имени непонятно, кто написал). В личном чате
-        #и у своих сообщений имя не нужно: клиент подписывает их «Вы».
-        sender_name = ""
-        if last is not None and conv.kind in ("group", "channel") and last.sender_id != user.id:
-            if last.sender_id == "system":
-                sender_name = SYSTEM_SENDER_NAME
-            else:
-                su = db.query(User).filter(User.id == last.sender_id).first()
-                sender_name = (su.full_name or su.name or "") if su else ""
-        #Непрочитанная ОТМЕТКА меня: список чатов рисует «@» вместо числа сообщений, а
-        #сам чат — кнопку перемотки к этому сообщению. Ищем самое РАННЕЕ непрочитанное
-        #упоминание, а не последнее: перематывать нужно к началу пропущенного разговора,
-        #иначе всё, что писали до отметки, так и останется непрочитанным.
-        #mentions — JSON-список [{user_id, silent, loud}], поэтому фильтруем в Python:
-        #искать по элементу JSON-массива средствами SQLite неудобно и непереносимо
-        #между версиями (тот же приём, что в directory()).
-        #⚠️ Список чатов опрашивается раз в 3.5 с, поэтому выборку сужаем ДО Python:
-        #`body LIKE '%@%'` отсекает подавляющее большинство строк (отметка по построению
-        #содержит «@» в тексте — mentions собирается из него же), а лимит держит запрос
-        #дешёвым даже в канале на сотню непрочитанных. Без этого на одноядерном VPS
-        #каждый тик вычитывал бы всю непрочитанную переписку по всем беседам сразу.
-        mention_id, mention_loud = 0, False
-        for cand in (db.query(Message)
-                     .filter(Message.conversation_id == conv.id,
+        #обращение к тебе, а отметка в ленте, а красный кружок заставляет открыть чат — в
+        #канале на сотню читателей он не гас бы никогда.
+        unread_by_conv[p.conversation_id] = (
+            base.filter(Message.sender_id != user.id,
+                        Message.kind != "system",
+                        Message.deleted_at == "",
+                        Message.created_at > (p.last_read_at or "")).count())
+    last_rows = list(last_by_conv.values())
+
+    # ── одна пачка: собеседники личных чатов ───────────────────────────────────────
+    direct_ids = [cid for cid in conv_ids
+                  if cid in convs and convs[cid].kind == "direct"]
+    peer_of = {}
+    if direct_ids:
+        others = (db.query(ConversationParticipant)
+                  .filter(ConversationParticipant.conversation_id.in_(direct_ids),
+                          ConversationParticipant.user_id != user.id).all())
+        peer_ids = {o.user_id for o in others}
+        peers = {u.id: u for u in db.query(User).filter(User.id.in_(peer_ids)).all()} \
+            if peer_ids else {}
+        for o in others:
+            #Первый найденный — как и раньше (в личном чате участников ровно двое).
+            peer_of.setdefault(o.conversation_id, peers.get(o.user_id))
+
+    # ── одна пачка: имена авторов, статусы и вложения ──────────────────────────────
+    # ⚠️ Правило имени здесь СВОЁ и НЕ `_names_for` (возражение Полковника, 09.09.2026).
+    # Тот подставляет `login` и даже `id`, когда ФИО пусто, — и это верно для ленты, где
+    # подпись обязана быть хоть какой-то. В СПИСКЕ чатов правило другое и прежнее:
+    # `full_name or name or ""`. Пустая строка означает «не подписывать автора вовсе», а
+    # с `login` у человека, заведённого синком по одному логину (ФИО ещё не приехало),
+    # строка превью из «текст» превратилась бы в «s1: текст». Мелочь, но это ровно тот
+    # класс, ради которого и говорится «поведение сохранено дословно».
+    sender_ids = {m.sender_id for m in last_rows
+                  if m.sender_id and m.sender_id != "system"}
+    senders = ({u.id: u for u in db.query(User).filter(User.id.in_(sender_ids)).all()}
+               if sender_ids else {})
+    statuses = _status_map(db, [p.id for p in peer_of.values() if p])
+    amap = _att_map(db, last_rows)
+
+    # ── отметки «@»: только там, где вообще есть непрочитанное ─────────────────────
+    # ⚠️ Сужение осознанное и обосновано, а не «кажется, так быстрее»: отметка попадает
+    # в `mentions` только у обычного сообщения от человека, а условия у неё те же, что у
+    # счётчика непрочитанного, плюс «содержит @». Значит при `unread == 0` непрочитанной
+    # отметки быть не может по построению. Прежний код сканировал ленту КАЖДОЙ беседы,
+    # в том числе давно прочитанной, — а `LIKE '%@%'` индексом не ускоряется никогда.
+    mention_by_conv = {}
+    for cid in [c for c in conv_ids if unread_by_conv.get(c)]:
+        p = by_conv[cid]
+        for cand in (db.query(Message.id, Message.mentions)
+                     .filter(Message.conversation_id == cid,
                              Message.sender_id != user.id,
                              Message.deleted_at == "",
                              Message.body.like("%@%"),
@@ -113,20 +169,39 @@ def list_chats(user: User = Depends(get_current_user), db: Session = Depends(get
                      .order_by(Message.id.asc()).limit(_MENTION_SCAN_LIMIT).all()):
             hit = next((x for x in (cand.mentions or []) if x.get("user_id") == user.id), None)
             if hit:
-                mention_id, mention_loud = cand.id, bool(hit.get("loud"))
+                mention_by_conv[cid] = (cand.id, bool(hit.get("loud")))
                 break
+
+    out = []
+    for p in parts:
+        conv = convs.get(p.conversation_id)
+        if conv is None:
+            continue
+        last = last_by_conv.get(conv.id)
+        #Чат удалён у меня и с тех пор ничего не приходило — не показываем его в списке.
+        #Появится новое сообщение — вернётся сам (см. _unhide_participants).
+        if p.hidden and last is None:
+            continue
+        #Имя автора последнего сообщения нужно списку чатов (в группе/канале строка
+        #выглядит как «Иванов: текст» — без имени непонятно, кто написал). В личном чате
+        #и у своих сообщений имя не нужно: клиент подписывает их «Вы».
+        sender_name = ""
+        if last is not None and conv.kind in ("group", "channel") and last.sender_id != user.id:
+            su = senders.get(last.sender_id)
+            sender_name = (SYSTEM_SENDER_NAME if last.sender_id == "system"
+                           else ((su.full_name or su.name or "") if su else ""))
+        mention_id, mention_loud = mention_by_conv.get(conv.id, (0, False))
         item = {
             "conversation_id": conv.id,
             "kind": conv.kind,
             "pinned": bool(p.pinned),
             "archived": bool(p.archived),
             "muted": bool(p.muted),
-            "unread": unread,
+            "unread": unread_by_conv.get(conv.id, 0),
             "mention_message_id": mention_id,     #0 — меня не отмечали
             "mention_loud": mention_loud,
             "last_message": (_preview_out(last, user.id, sender_name,
-                                          _att_map(db, [last]).get(
-                                              getattr(last, "attachment_id", "") or ""))
+                                          amap.get(getattr(last, "attachment_id", "") or ""))
                              if last else None),
             "last_at": (last.created_at if last else conv.created_at) or "",
             #Системный канал («Мои оценки», «Расписание · Группа», «Объявления») ведёт
@@ -138,9 +213,9 @@ def list_chats(user: User = Depends(get_current_user), db: Session = Depends(get
             "is_system": bool(conv.is_system),
         }
         if conv.kind == "direct":
-            peer = _peer_of_direct(db, conv.id, user.id)
+            peer = peer_of.get(conv.id)
             item["title"] = (peer.full_name or peer.name or peer.login) if peer else "Диалог"
-            item["peer"] = _safe_user(peer, onl, status=_status_map(db, [peer.id]).get(peer.id)) if peer else None
+            item["peer"] = _safe_user(peer, onl, status=statuses.get(peer.id)) if peer else None
         else:
             item["title"] = conv.title or ""
             #Аватарка группы/канала. У личного чата её нет намеренно: там лицо беседы —

@@ -26,6 +26,7 @@
 // виджет не кладём вовсе — рабочий стол видят посторонние.
 
 import { getApiBase } from '@/api/server'
+import { shouldRefresh } from '@/utils/widgetRefresh'
 
 // Дни недели — та же запись и тот же порядок, что в schedule/model.py::WEEKDAYS.
 // Своей копии списка заводить не хотелось, но мост нативный: третьего пути нет.
@@ -239,8 +240,6 @@ const LS_LAST = 'gb.widget.lastRefresh'          //последний УСПЕХ
                                                  //менять его значит потерять историю у
                                                  //всех, кто просто обновился)
 const LS_TRY = 'gb.widget.lastTry'               //последняя ПОПЫТКА, удачная или нет
-const STALE_MS = 6 * 60 * 60 * 1000     //шесть часов: расписание меняется реже
-const RETRY_MS = 5 * 60 * 1000          //после осечки — через пять минут, а не через шесть часов
 
 function readTs(key) {
   try {
@@ -263,12 +262,8 @@ function writeTs(key, value) {
 export async function refreshIfStale(role) {
   if (!isAvailable() || !isWanted()) return false
   const now = Date.now()
-  const okAt = readTs(LS_LAST)
-  const tryAt = readTs(LS_TRY)
-  //Свежие данные есть — не трогаем. Это и есть основной ограничитель.
-  if (now - okAt < STALE_MS) return false
-  //Данные несвежие, но мы только что пробовали и не смогли — не долбим сеть.
-  if (now - tryAt < RETRY_MS) return false
+  //🔑 Само правило — в `utils/widgetRefresh.js`: здесь его нечем проверить без сборщика.
+  if (!shouldRefresh({ now, okAt: readTs(LS_LAST), tryAt: readTs(LS_TRY) })) return false
 
   writeTs(LS_TRY, now)
   const ok = await refreshFromServer(role)

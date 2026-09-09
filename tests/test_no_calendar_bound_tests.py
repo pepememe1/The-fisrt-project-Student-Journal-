@@ -24,6 +24,7 @@ test_no_calendar_bound_tests.py — 🕒 ТЕСТ НЕ ИМЕЕТ ПРАВА З�
 ⚠️ Список исключений намеренно КРОШЕЧНЫЙ и с причинами. Растёт он — значит правило
 перестают соблюдать, и это повод для разговора, а не для дописывания строки.
 """
+import io
 import os
 import re
 
@@ -43,6 +44,11 @@ ALLOWED = {
     #Значение конфига здесь — ДАННЫЕ (проверяется, что синк не затирает config), сам год
     #на исход не влияет.
     "server/tests/test_sync_config_clobber.py",
+    #Та же причина, что у test_term_calendar: проверяются ГРАНИЦЫ самой формулы по
+    #ЯВНЫМ ФИКСИРОВАННЫМ датам — `term_for_date(datetime(2026, 9, 1))`. Такая проверка
+    #не протухает никогда: 1 сентября 2026 останется началом 2026/2027 и через десять
+    #лет. Совпадение литерала с сегодняшним годом здесь случайно и временно.
+    "server/tests/test_course_rollover.py",
 }
 
 #Учебный год: «YYYY/YYYY+1».
@@ -55,6 +61,55 @@ def _code_only(line: str) -> str:
     значило бы запретить объяснять собственные уроки, а этого мы не делаем."""
     cut = line.find("#")
     return line if cut < 0 else line[:cut]
+
+
+def _prose_lines(src: str) -> set:
+    """Номера строк, занятых ДОКСТРИНГАМИ (пояснениями), а не кодом.
+
+    🔥 09.09.2026: сторож краснел на СОБСТВЕННОМ уроке. `_code_only` ниже срезает
+    комментарий `#` — и правильно, его докстринг прямо это объясняет: «Год, названный в
+    ПОЯСНЕНИИ, ничего не привязывает». Но докстринг комментарием не является, и
+    `test_course_rollover.py` покраснел за фразу «со штампом 2026/2027·1» в описании
+    боевого дефекта. То есть правило запрещало ровно то, что его же докстринг обещал
+    разрешить, — и подталкивало не объяснять свои находки либо вписать целый файл в
+    список исключений.
+
+    ⚠️ Срезается ТОЛЬКО докстринг, а не всякая строка в кавычках. Это принципиально:
+    самый частый вид самого дефекта — год ЗНАЧЕНИЕМ внутри проверки
+    (`assert term == "2026/2027"`), и срезав все строковые литералы, сторож ослеп бы
+    именно на нём. Признак докстринга — строковый литерал, СТОЯЩИЙ ОТДЕЛЬНЫМ
+    ВЫРАЖЕНИЕМ: такая строка ничего не делает, она и есть текст для человека.
+    """
+    import tokenize
+    out = set()
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except Exception:
+        return out                       #не разобрали — считаем, что пояснений нет
+    #🔥 ВНУТРИ СКОБОК `NL` — НЕ НАЧАЛО ОПЕРАТОРА (нашёл Полковник в день написания).
+    #Первая версия внесла `tokenize.NL` в начала без оговорки — и сторож ослеп на
+    #МНОГОСТРОЧНОЙ проверке: когда список сравнения перенесён на следующую строку,
+    #перенос ВНУТРИ скобки даёт токен `NL`, литерал оказывается «первым на строке» и
+    #объявляется пояснением. То есть правило переставало ловить ровно тот дефект,
+    #который его докстринг обещает ловить, стоило записать проверку в две строки — а
+    #многострочный `assert` со снимком ответа у нас обычная форма. Живой регрессии не
+    #было, но слепота копилась бы молча, и поймал её обратный ход, а не чтение.
+    #Поэтому считаем глубину скобок: `NL` начинает оператор только на нулевой глубине.
+    starters = {tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE, tokenize.ENCODING}
+    prev = tokenize.NEWLINE
+    depth = 0
+    for tok in toks:
+        starts = prev in starters or (prev == tokenize.NL and depth == 0)
+        if tok.type == tokenize.STRING and starts:
+            out.update(range(tok.start[0], tok.end[0] + 1))
+        if tok.type == tokenize.OP:
+            if tok.string in "([{":
+                depth += 1
+            elif tok.string in ")]}":
+                depth = max(0, depth - 1)
+        if tok.type != tokenize.COMMENT:
+            prev = tok.type
+    return out
 
 
 def _current_academic_year() -> str:
@@ -88,9 +143,11 @@ def test_no_test_hardcodes_the_current_academic_year():
         if rel in ALLOWED or rel.endswith("test_no_calendar_bound_tests.py"):
             continue
         with open(path, encoding="utf-8") as fh:
-            for n, line in enumerate(fh, 1):
-                if current in _code_only(line):
-                    offenders.append(f"{rel}:{n}: {line.strip()[:100]}")
+            src = fh.read()
+        prose = _prose_lines(src)
+        for n, line in enumerate(src.splitlines(), 1):
+            if n not in prose and current in _code_only(line):
+                offenders.append(f"{rel}:{n}: {line.strip()[:100]}")
     assert not offenders, (
         f"Тест привязан к ТЕКУЩЕМУ учебному году ({current}) — он протухнет 1 сентября "
         "и покраснеет в самый неудобный день, либо, что хуже, начнёт молча проверять "
@@ -122,3 +179,31 @@ def test_the_allow_list_has_no_dead_entries():
 def test_every_exception_is_still_a_test_file(rel):
     """Мелочь, но своя: список должен указывать на тесты, а не на что попало."""
     assert rel.endswith(".py") and "/test_" in rel, rel
+
+
+def test_the_rule_still_catches_a_year_written_across_several_lines():
+    """🔒 ОБРАТНЫЙ ХОД к `_prose_lines`, и он не формальность.
+
+    Первая версия функции срезала литерал, стоящий первым на ПРОДОЛЖЕНИИ строки внутри
+    скобок, — то есть переставала видеть год в многострочной проверке. Сторож при этом
+    оставался зелёным, потому что живого нарушения такой формы в репозитории не было:
+    слепота копилась бы молча и вылезла бы на первом же снимке ответа в скобках.
+
+    Здесь проверяются ОБА исхода на одном куске кода: пояснение прощается, значение —
+    нет, в том числе записанное в несколько строк.
+    """
+    src = (
+        'def test_x():\n' 
+        '    """Пояснение про 2026/2027 — объясняет прошлый урок."""\n' 
+        '    assert term == "2026/2027"\n' 
+        '    assert terms == [\n' 
+        '        "2026/2027",\n' 
+        '    ]\n'
+    )
+    prose = _prose_lines(src)
+    caught = [n for n, line in enumerate(src.splitlines(), 1)
+              if n not in prose and "2026/2027" in _code_only(line)]
+    assert 2 not in caught, "докстринг снова считается привязкой — правило само себе врёт"
+    assert caught == [3, 5], (
+        "год ЗНАЧЕНИЕМ обязан ловиться в ЛЮБОЙ записи, включая многострочную; "
+        f"поймано на строках {caught}")

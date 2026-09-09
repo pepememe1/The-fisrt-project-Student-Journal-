@@ -5,7 +5,8 @@
 // лежит только id, а объект подмешивает сервер (`_attach_rich_meta`). Статус активности
 // меняется ПОСЛЕ отправки (идёт → завершена), поэтому кнопка гаснет по `status`, а не по
 // содержимому сообщения: переотправлять его ради этого незачем.
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed } from 'vue'
+import { useSharedNow } from '@/utils/sharedClock'
 import { Presentation, ListChecks, Trophy, BarChart3, Gauge, Timer } from '@lucide/vue'
 import { useLocaleStore } from '@/stores/locale'
 import { useActivityStore } from '@/stores/activity'
@@ -28,10 +29,12 @@ const kindLabel = computed(() =>
 
 // Таймер «идёт N мин» — от начала активности. Тикаем локально: слать секунды по сокету
 // всем участникам ради подписи на кнопке — самая дорогая реализация самой дешёвой вещи.
-const now = ref(Date.now())
-let tick = null
-onMounted(() => { tick = setInterval(() => { now.value = Date.now() }, 1000) })
-onBeforeUnmount(() => { if (tick) clearInterval(tick) })
+//
+// 🔑 Часы ОБЩИЕ и идут ТОЛЬКО у идущей активности (B7 разбора 07.09.2026). Прежде здесь
+// стоял свой `setInterval` БЕЗУСЛОВНО — то есть завершённая активность, у которой время
+// уже никогда не изменится, до конца сеанса будила реактивность раз в секунду. В ленте
+// таких карточек столько, сколько их было в беседе за семестр.
+const now = useSharedNow(running)
 
 const elapsed = computed(() => {
   const started = Date.parse(props.activity.started_at || '')
