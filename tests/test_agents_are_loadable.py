@@ -194,3 +194,66 @@ def test_the_validator_itself_is_green():
     assert res.returncode == 0, (
         "validate-agents.py вернул ошибку:\n%s\n%s"
         % (res.stdout or "", res.stderr or ""))
+
+
+@pytest.mark.parametrize("path", _agent_files(), ids=lambda p: p.name)
+def test_effort_is_declared_explicitly(path):
+    """У каждой грани явно назван уровень усилия.
+
+    ⚠️ Это второй рычаг цены после `model`, и он работает ровно так же: **не заданный
+    `effort` наследуется от СЕССИИ**, то есть от самого дорогого уровня, на котором
+    сейчас работает Прайм. Пять граней из тринадцати (`gb-android`, `gb-fix`, `gb-i18n`,
+    `gb-parity`, `gb-tests`) жили без него до 05.09.2026 — то есть механическая работа
+    вроде «запусти прогон и перескажи вердикт» оплачивалась по верхнему тарифу, и
+    заметить это было нечем: в отчёте грани уровень усилия не виден.
+
+    Значение проверяется по списку самого валидатора, чтобы два места не разошлись."""
+    fm = yaml.safe_load(_frontmatter(path))
+    effort = fm.get("effort")
+    assert effort, (
+        "%s: не задан effort — грань унаследует уровень усилия сессии, то есть самый "
+        "дорогой. Проставь явно: low для механической работы, medium для разбора, "
+        "high только там, где нужен адверсариальный анализ." % path.name)
+    allowed = _validator_constant("EFFORT")
+    assert effort in allowed, (
+        "%s: effort='%s' вне допустимых %s" % (path.name, effort, sorted(allowed)))
+
+
+def _validator_constant(name: str) -> set:
+    """Достаёт множество-константу из `.claude/validate-agents.py`.
+
+    ⚠️ Берём из ЧУЖОГО файла, а не повторяем список у себя: тест, повторяющий формулу,
+    сверяет копию с копией и переживает любое расхождение (записанный урок 24.08.2026)."""
+    import ast
+    src = VALIDATOR.read_text(encoding="utf-8")
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == name:
+            return set(ast.literal_eval(node.value))
+    raise AssertionError("в validate-agents.py нет константы %s — разбор устарел" % name)
+
+
+def test_the_validator_constants_are_readable():
+    """Обратный ход к разбору чужого файла: сломайся он — проверка выше стала бы
+    зелёной по неверной причине, а не покраснела."""
+    effort = _validator_constant("EFFORT")
+    models = _validator_constant("MODELS")
+    assert "low" in effort and "max" in effort, effort
+    assert "haiku" in models and "opus" in models, models
+
+
+def test_cheap_work_is_not_paid_at_the_top_rate():
+    """СВОЙСТВО, а не поимённый список: большинство граней обязано быть дешёвым.
+
+    Грань стартует холодной и целиком оплачивает вход (CLAUDE.md ~108 000 токенов).
+    Если и модель, и усилие у большинства верхние — сеть граней перестаёт экономить и
+    начинает стоить дороже, чем сделать работу самому. Именно это и произошло
+    01–02.09.2026, когда три грани разом вернули 429."""
+    top = []
+    for path in _agent_files():
+        fm = yaml.safe_load(_frontmatter(path))
+        if fm.get("effort") in {"high", "xhigh", "max"}:
+            top.append(path.stem)
+    total = len(_agent_files())
+    assert len(top) * 2 <= total, (
+        "на верхнем усилии %d граней из %d (%s) — сеть перестала быть дешевле, чем "
+        "сделать работу самому" % (len(top), total, sorted(top)))

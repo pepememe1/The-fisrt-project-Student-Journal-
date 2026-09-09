@@ -117,12 +117,34 @@ def test_empty_cells_are_skipped_not_counted_as_groups():
 
 def test_list_category_groups_drops_course_for_old_callers():
     """list_category_groups (без курса) остаётся тонкой обёрткой — существующие
-    потребители (schedule_web.py и др.) не видят разницы."""
+    потребители (schedule_web.py и др.) не видят разницы.
+
+    ⚠️ ЗДЕСЬ БЫЛА ТАВТОЛОГИЯ (найдена 05.09.2026 при разборе слепых тестов). Тест
+    писал у себя ВЫРАЖЕНИЕ, дословно совпадающее с телом продукта:
+
+        new = [(name, href) for name, href, _course in list_category_groups_with_course(...)]
+        assert old == new
+
+    а `list_category_groups` ровно этим выражением и является. То есть сверялась копия
+    с копией: любая ошибка внутри `list_category_groups_with_course` появлялась
+    ОДИНАКОВО с обеих сторон и была невидима. Это первая из трёх записанных форм
+    «сторожа, который не может покраснеть» (CLAUDE.md, 24.08.2026), и лечится она
+    ровно так — проверкой СВОЙСТВА, а не равенства двух путей к одному источнику."""
     html = _load("schedule_index_bakalavriat.htm")
     old = P.list_category_groups(html, "bakalavriat")
-    new = [(name, href) for name, href, _course in
-          P.list_category_groups_with_course(html, "bakalavriat")]
-    assert old == new
+    triples = P.list_category_groups_with_course(html, "bakalavriat")
+
+    #1. Обёртка ничего не теряет и не добавляет.
+    assert len(old) == len(triples) > 0, "на живом снимке индекса групп быть должно"
+    #2. Форма именно пара, а не тройка: старый потребитель распаковывает в две
+    #   переменные, и лишний элемент уронил бы его «too many values to unpack».
+    assert all(isinstance(x, tuple) and len(x) == 2 for x in old), old[:3]
+    #3. Значения настоящие: имя непустое, href ведёт на страницу группы.
+    for name, href in old:
+        assert name.strip(), "имя группы пустое"
+        assert href.strip().endswith(".htm"), href
+    #4. И только теперь — что курс отброшен, а первые два поля сохранены как есть.
+    assert old == [(n, h) for n, h, _c in triples]
 
 
 def test_list_college_groups_unchanged_behavior():

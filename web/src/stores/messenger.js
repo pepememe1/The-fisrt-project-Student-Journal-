@@ -591,7 +591,11 @@ export const useMessengerStore = defineStore('messenger', () => {
         let ev
         try { ev = JSON.parse(e.data) } catch { return }
         if (ev.type === 'changed') {
-          if (ev.conversation_id === activeId.value) pollOnce()
+          //Свёрнуто — только помечаем. Ленту и список всё равно никто не видит, а вот
+          //запросы и перерисовку они вызывают настоящие.
+          if (ev.conversation_id === activeId.value) {
+            if (!_hidden()) pollOnce()
+          } else if (_hidden()) missedChats = true
           else loadChats()
         } else if (ev.type && ev.type.startsWith('activity.')) {
           // Активности (docs/PLAN-ACTIVITIES.md §7) — своего канала у них нет, кадры
@@ -615,7 +619,10 @@ export const useMessengerStore = defineStore('messenger', () => {
             // активности до перезахода в чат. Тот же класс, что уже ловили с `/clear`.
             _patchActivityCard(ev.activity_id, ev.finished_at || new Date().toISOString())
           }
-          if (ev.conversation_id === activeId.value) pollOnce()   // карточка в ленте
+          //Кадры активности приходят часто; в свёрнутом приложении их некому показывать.
+          if (ev.conversation_id === activeId.value && !_hidden()) {
+            pollOnce()                                             // карточка в ленте
+          }
         } else if (ev.type === 'typing' && ev.conversation_id === activeId.value) {
           peerTyping.value = true
           clearTimeout(typingTimer)
@@ -642,9 +649,13 @@ export const useMessengerStore = defineStore('messenger', () => {
   // упавший сервер получил бы шквал попыток со всех вкладок колледжа сразу.
   function _scheduleReconnect() {
     if (!pollTimer) return                    // раздел закрыт — не воскрешаем
+    //⚠️ Свёрнутое приложение связь не чинит. Показывать некому, а цепочка попыток на
+    //телефоне — это пробуждения радиомодуля всю ночь. Вернулись к окну — `_onVisibleAgain`
+    //подключается НЕМЕДЛЕННО и без ожидания паузы (там же сбрасывается счётчик попыток).
+    if (_hidden()) return
     clearTimeout(wsRetryTimer)
     const delay = reconnectDelay(wsRetry++)
-    wsRetryTimer = setTimeout(() => { if (pollTimer) _connectWS() }, delay)
+    wsRetryTimer = setTimeout(() => { if (pollTimer || !_hidden()) _connectWS() }, delay)
   }
 
   function _disconnectWS() {
@@ -669,6 +680,33 @@ export const useMessengerStore = defineStore('messenger', () => {
 
   /** Жив ли сокет ПРЯМО СЕЙЧАС (readyState 1 = OPEN). */
   function _wsAlive() { return !!ws && ws.readyState === 1 }
+
+  /**
+   * 🔥 СКРЫТО ЛИ ПРИЛОЖЕНИЕ — ОДИН ВОПРОС НА ВЕСЬ ТРАНСПОРТ (07.09.2026).
+   *
+   * Дефект, ради которого заведено. Правило «в скрытой вкладке не ходим в сеть» жило
+   * ТОЛЬКО в `_tick` — то есть в интервальном опросе. Существующий тест это проверял и
+   * был зелёным, а мимо него шли две другие цепочки:
+   *   • обработчик сообщений сокета звал `pollOnce()`/`loadChats()`/`loadConvInfo()` без
+   *     единой проверки. Свёрнутое на телефоне приложение продолжало выполнять запросы,
+   *     пока Android не приостановит процесс — а когда он это сделает, не знает никто;
+   *   • переподключение сокета планировалось так же безусловно, и упавшая ночью связь
+   *     давала цепочку попыток у свёрнутого приложения.
+   * Зелёный тест рядом с дефектом — это «случай не покрыт», а не «исправно».
+   *
+   * ⚠️ Пропущенное не теряется: ставим флаг и догоняем ОДНИМ согласованным запросом при
+   * возврате (`_onVisibleAgain`). Доставка уведомлений в фоне — дело нативных пушей, а
+   * не нашего опроса; это разные механизмы, и подменять один другим значит платить
+   * батареей за то, что уже сделано системой.
+   */
+  function _hidden() { return typeof document !== 'undefined' && document.hidden }
+
+  //Что накопилось, пока приложение было свёрнуто. Разбираем при возвращении.
+  //⚠️ Флаг ОДИН, и только для списка бесед. Отдельного «менялась активная беседа» здесь
+  //нет намеренно: ленту при возвращении мы перечитываем ВСЕГДА (сокет мог пропустить
+  //события и без нашей помощи), значит такой флаг ни на что не влиял бы — то есть был бы
+  //мёртвой величиной, которую следующий читатель принял бы за работающую защиту.
+  let missedChats = false
 
   /** Частота тика зависит от того, есть ли сокет; переустанавливаем при смене режима. */
   function _applyPollInterval() {
@@ -697,7 +735,11 @@ export const useMessengerStore = defineStore('messenger', () => {
     if (typeof document === 'undefined' || document.hidden) return
     if (!pollTimer) return
     if (!_wsAlive()) { wsRetry = 0; _connectWS() }   // вернулись — чиним связь немедленно
-    pollOnce()                                       // и догоняем пропущенное
+    //Догоняем ОДНИМ согласованным заходом, а не по запросу на каждое пропущенное событие:
+    //за ночь их набирается сотня, и повторять их по одному значило бы устроить при
+    //разблокировке ровно тот шквал, ради избежания которого мы молчали.
+    if (missedChats) { missedChats = false; loadChats() }
+    pollOnce()                                       // и догоняем ленту
   }
 
   function startPolling() {
@@ -708,6 +750,9 @@ export const useMessengerStore = defineStore('messenger', () => {
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', _onVisibleAgain)
   }
   function stopPolling() {
+    //Накопленное относится к разделу, который закрывают: следующий вход соберёт свежее
+    //сам, а «догнать» по флагу от прошлой сессии — это запрос за чужими данными.
+    missedChats = false
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
     pollEvery = 0
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', _onVisibleAgain)

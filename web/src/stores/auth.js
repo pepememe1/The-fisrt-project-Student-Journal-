@@ -9,6 +9,10 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi } from '@/api/endpoints'
 import { getAccess, setTokens, clearTokens } from '@/api/tokens'
+//Поколение сессии: им отсекается запоздавший refresh ПРЕЖНЕГО аккаунта —
+//см. подробный разбор в api/client.js. Двигать обязаны все три двери:
+//вход (_afterLogin), выход (logout) и локальный сброс (clearSession).
+import { bumpSessionGeneration } from '@/api/client'
 import { clearCache } from '@/api/offlineCache'
 import { clearDrafts } from '@/utils/drafts'
 import { resetOfflineSession } from '@/api/offlineSession'
@@ -65,6 +69,9 @@ export const useAuthStore = defineStore('auth', () => {
    * где однажды забудут строку. Поэтому одна функция.
    */
   function _afterLogin(data, loginStr) {
+    //ПЕРВОЙ строкой, до записи токенов: всё, что улетело в сеть от прежнего человека,
+    //с этого момента чужое и не имеет права ни дописать токены, ни стереть их.
+    bumpSessionGeneration()
     setTokens({ access: data.access_token, refresh: data.refresh_token })
     user.value = {
       login: loginStr || data.login || '',
@@ -211,6 +218,9 @@ export const useAuthStore = defineStore('auth', () => {
     await unregisterToken()
     // Гасим токен и на сервере (чёрный список), а не только локально — безопасный выход.
     try { await authApi.logout() } catch { /* офлайн — всё равно чистим локально */ }
+    //«Вышел и не вошёл» — это ТОЖЕ другая сессия: запоздавший успешный refresh иначе
+    //вернул бы в хранилище живые токены человека, который только что вышел.
+    bumpSessionGeneration()
     clearTokens()
     localStorage.removeItem(LS_USER)
     clearCache()   // стираем оффлайн-кэш — чтобы данные не показались другому юзеру
@@ -246,6 +256,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   // Локальная очистка сессии без обращения к серверу (напр. при протухшем refresh).
   function clearSession() {
+    bumpSessionGeneration()
     clearTokens()
     localStorage.removeItem(LS_USER)
     clearCache()

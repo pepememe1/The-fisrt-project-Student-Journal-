@@ -3,7 +3,7 @@
 // Появляется по тапу на сообщение рядом с ним. Набор кнопок зависит от прав
 // (своё/чужое, закреплено ли, удалено ли) — см. MESSENGER-PLAN.md §6.8. Эмитит выбранное
 // действие наверх (ChatThread выполняет), сам ничего не делает с данными.
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Reply, Pin, PinOff, Copy, Forward, Trash2, ListChecks, Flag, AlarmClock, Languages, Volume2, SmilePlus } from '@lucide/vue'
 import { useLocaleStore } from '@/stores/locale'
 
@@ -24,11 +24,82 @@ const emit = defineEmits(['pick', 'react', 'close'])
 const REACTIONS = ['👍', '✅', '❤️', '😂', '👀', '🔥', '💯', '❓', '📌']
 
 const m = computed(() => props.message)
-// Позиция: клампим, чтобы меню не уезжало за правый/нижний край.
+
+/**
+ * 🔥 ВЫСОТУ МЕНЮ МЕРЯЕМ, А НЕ ПРЕДПОЛАГАЕМ (07.09.2026).
+ *
+ * Здесь стояло `Math.min(y, innerHeight - 360)` — то есть высота считалась постоянной и
+ * равной 360 px. Настоящая зависит от набора пунктов (их от 3 до 12, плюс две строки
+ * реакций) и на обычном телефоне 360×640 доходит до 405: нижний пункт «Удалить» уезжал
+ * за край экрана, и добраться до него было НЕЧЕМ — прокрутки у меню тоже не было.
+ * Замер воспроизведения: верх 280, низ 685 при экране 640.
+ *
+ * Хуже того, `Math.min` без нижней границы: на низком экране (клавиатура открыта,
+ * ландшафт) `innerHeight - 360` уходит в минус, меню вылезало ВВЕРХ за край, и вместе с
+ * ним пропадала строка реакций.
+ *
+ * ⚠️ Мерить надо ПОСЛЕ отрисовки — до неё высоты не существует. Поэтому положение живёт
+ * в ref и уточняется в `onMounted`/`nextTick`, а не вычисляется одним `computed`. Первый
+ * кадр рисуется по осторожной оценке, чтобы меню не мигало из угла.
+ */
+const HALF = 240                    // ширина меню (w-56 = 224) + запас
+const GUESS_H = 380                 // оценка до первого замера
+const EDGE = 8                      // безопасный отступ от краёв экрана
+
+const box = ref(null)
+const pos = ref({ top: 0, left: 0 })
+const maxH = ref(0)
+
+function viewport() {
+  if (typeof window === 'undefined') return { w: 1200, h: 800 }
+  //visualViewport учитывает ЭКРАННУЮ КЛАВИАТУРУ: без него на телефоне меню считает
+  //доступной высоту, половину которой занимает клавиатура.
+  const vv = window.visualViewport
+  return { w: vv?.width || window.innerWidth, h: vv?.height || window.innerHeight }
+}
+
+function place() {
+  const { w, h } = viewport()
+  const own = box.value?.offsetHeight || GUESS_H
+  //Меню выше экрана целиком — отдаём ему всё, что есть, и включаем прокрутку внутри.
+  const avail = h - EDGE * 2
+  maxH.value = own > avail ? avail : 0
+  const height = Math.min(own, avail)
+  //Клампим С ОБЕИХ сторон: верхняя граница нужна не меньше нижней (см. докстринг).
+  pos.value = {
+    top: Math.max(EDGE, Math.min(props.y, h - height - EDGE)),
+    left: Math.max(EDGE, Math.min(props.x, w - HALF - EDGE)),
+  }
+}
+
 const style = computed(() => ({
-  top: `${Math.min(props.y, (typeof window !== 'undefined' ? window.innerHeight : 800) - 360)}px`,
-  left: `${Math.min(props.x, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 240)}px`,
+  top: `${pos.value.top}px`,
+  left: `${pos.value.left}px`,
+  //0 означает «влезает целиком» — тогда ограничение не навязываем вовсе.
+  ...(maxH.value ? { maxHeight: `${maxH.value}px`, overflowY: 'auto' } : {}),
 }))
+
+onMounted(async () => {
+  place()
+  await nextTick()
+  place()                            // теперь высота настоящая
+  if (typeof window !== 'undefined') {
+    window.visualViewport?.addEventListener('resize', place)
+    window.addEventListener('resize', place)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof window === 'undefined') return
+  window.visualViewport?.removeEventListener('resize', place)
+  window.removeEventListener('resize', place)
+})
+
+//Набор пунктов зависит от прав и от того, показан ли перевод: изменился — высота другая.
+watch(() => [props.message?.id, props.translated], async () => {
+  await nextTick()
+  place()
+})
 
 // Список действий по правам (Фаза 3 — личные чаты).
 const items = computed(() => {
@@ -68,7 +139,11 @@ const items = computed(() => {
 <template>
   <!-- Полупрозрачная подложка: клик мимо — закрыть -->
   <div class="fixed inset-0 z-40" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <div class="fixed z-50 w-56 overflow-hidden rounded-xl border border-border2 bg-card py-1 shadow-card"
+    <!-- ⚠️ `overflow-hidden` убран: он и превращал не поместившиеся пункты в
+         недостижимые. Прокрутку включает `style` — но только когда меню правда не
+         влезает, иначе у короткого меню появлялась бы лишняя полоса. -->
+    <div ref="box"
+         class="fixed z-50 w-56 rounded-xl border border-border2 bg-card py-1 shadow-card"
          :style="style" @click.stop>
       <!-- §D3: быстрые реакции — строка эмодзи над списком действий (как в Telegram).
            flex-wrap — 9 эмодзи не помещаются в один ряд узкой панели, переносим на вторую. -->

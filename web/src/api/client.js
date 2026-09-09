@@ -84,17 +84,65 @@ api.interceptors.request.use((config) => {
 // Чтобы параллельные запросы не стартовали несколько refresh разом — общий промис.
 let refreshing = null
 
+/**
+ * 🔥 ПОКОЛЕНИЕ СЕССИИ (07.09.2026).
+ *
+ * Дефект, ради которого заведено. `doRefresh` брал refresh-токен, УХОДИЛ В СЕТЬ и по
+ * возвращении записывал новые токены БЕЗУСЛОВНО. Ветка ошибки так же безусловно их
+ * стирала. А между отправкой и ответом человек мог выйти и войти под другим аккаунтом —
+ * на общем компьютере колледжа это не экзотика, а обычный день.
+ * Сценарий: запрос аккаунта A задержался, вошёл B. Поздний УСПЕХ A перезаписывает токены
+ * B (человек продолжает работу под чужой сессией — и права, и данные чужие); поздний
+ * ОТКАЗ A выбрасывает B из аккаунта посреди выставления оценок.
+ *
+ * Лечится не «проверить логин» — логин к моменту ответа уже другой, и сравнивать не с
+ * чем, — а НОМЕРОМ ПОКОЛЕНИЯ. Записывать токены, стирать их и повторять запрос вправе
+ * только то поколение, которое этот refresh начало.
+ *
+ * ⚠️ Счётчик двигает КАЖДАЯ смена владельца сессии: и вход, и выход. Двигать только на
+ * входе недостаточно — «вышел и не вошёл» это тоже другая сессия, и дописывать в неё
+ * чужие токены нельзя.
+ */
+let sessionGen = 0
+
+/** Позвать при входе И при выходе: всё, что было в полёте, теперь чужое. */
+export function bumpSessionGeneration() {
+  sessionGen += 1
+  //Промис прежнего поколения больше никого не обслуживает: пусть следующий 401 начнёт
+  //свой refresh, а не ждёт чужой ответ, который всё равно будет отброшен.
+  refreshing = null
+  return sessionGen
+}
+
+/** Только для тестов: текущее поколение. */
+export function _sessionGeneration() { return sessionGen }
+
 async function doRefresh() {
   const refresh = getRefresh()
   if (!refresh) throw new Error('no refresh token')
+  const gen = sessionGen
   // Голый axios (без интерсепторов), чтобы не зациклиться на 401.
   const { data } = await axios.post(
     getApiBase() + '/auth/refresh',
     { refresh_token: refresh },
     { headers: { 'X-Device-Id': getDeviceId(), 'X-Client': clientKind() } },
   )
+  if (gen !== sessionGen) {
+    // Пока мы ходили в сеть, сессию сменили. Наши токены принадлежат ПРЕЖНЕМУ человеку;
+    // записать их сейчас значит подменить сессию тому, кто вошёл после.
+    throw new StaleSessionError()
+  }
   setTokens({ access: data.access_token, refresh: data.refresh_token || refresh })
   return data.access_token
+}
+
+/** Отличает «сессию сменили» от «сервер отказал»: реакции на них ПРОТИВОПОЛОЖНЫЕ. */
+class StaleSessionError extends Error {
+  constructor() {
+    super('session changed while refreshing')
+    this.name = 'StaleSessionError'
+    this.stale = true
+  }
 }
 
 // Успешный ответ: кэшируем role-scoped READ (GET /web/*, /me/prefs) для оффлайна.
@@ -146,13 +194,19 @@ api.interceptors.response.use(
     if (config.url?.includes('/auth/login') || config.url?.includes('/auth/refresh')) {
       return Promise.reject(error)
     }
+    const gen = sessionGen
     try {
       if (!refreshing) refreshing = doRefresh().finally(() => { refreshing = null })
       const newAccess = await refreshing
+      if (gen !== sessionGen) return Promise.reject(error)   // повтор — уже не наш
       config._retried = true
       config.headers.Authorization = `Bearer ${newAccess}`
       return api(config)
-    } catch {
+    } catch (e) {
+      // ⚠️ «Сессию сменили» и «сервер отказал» здесь РАЗНЫЕ события, и раньше оба
+      // заканчивались `clearTokens()`. То есть запоздавший отказ по СТАРОМУ аккаунту
+      // выбрасывал из программы того, кто вошёл после него.
+      if (e?.stale || gen !== sessionGen) return Promise.reject(error)
       clearTokens()
       if (authExpiredHandler) authExpiredHandler()
       return Promise.reject(error)

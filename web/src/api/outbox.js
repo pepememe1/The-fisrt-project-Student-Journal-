@@ -64,6 +64,30 @@ export const rejected = ref([])
 /** Идёт ли выгрузка прямо сейчас (чтобы не запустить две разом). */
 export const flushing = ref(false)
 
+/**
+ * 🔥 ЗАПИСЬ, КОТОРАЯ ПРЯМО СЕЙЧАС ЛЕТИТ НА СЕРВЕР (07.09.2026).
+ *
+ * Дефект, ради которого заведено. Проверка `if (!pending.value.includes(entry)) continue`
+ * закрывала только один случай — запись убрали ДО её очереди. А главная дыра была
+ * ВНУТРИ `await send(entry)`: запрос уже ушёл со снимком полей, и всё, что человек делал
+ * следующие полсекунды, пропадало молча.
+ *   • правка: отправка началась → преподаватель исправил тему занятия → сервер сохранил
+ *     ПРЕЖНЮЮ, а очередь опустела. Правки больше нет нигде;
+ *   • удаление: удалённое временное занятие всё равно создавалось на сервере — и
+ *     оставалось там навсегда, потому что удалять было уже нечего.
+ *
+ * Лечится ВЕРСИЕЙ операции (`rev`) плюс состоянием «в полёте». Изменение во время
+ * полёта не пытается догнать уже ушедший запрос — оно превращается в СЛЕДУЮЩУЮ
+ * операцию, которая уйдёт, когда станет известен настоящий id занятия.
+ */
+let inFlight = null            // { key, rev } — что именно сейчас в сети
+//Временные занятия, которые человек удалил, пока их создание летело на сервер.
+//Настоящего id ещё нет, поэтому удаление ждёт его здесь.
+const deleteAfterCreate = new Set()
+
+/** Только для тестов: что сейчас в полёте. */
+export function _inFlight() { return inFlight }
+
 export const pendingCount = computed(() => pending.value.length)
 
 /** Похоже ли это на занятие, которого на сервере ещё нет. */
@@ -130,6 +154,10 @@ function enqueue(kind, key, payload) {
     key,
     payload,
     seq: prev?.seq ?? Date.now() + rest.length,   // порядок постановки переживает правку
+    //Версия НАМЕРЕНИЯ. Схлопывание повторов (см. выше) переписывает payload на месте, и
+    //без счётчика отличить «то же самое» от «человек успел поправить» нечем: объект тот
+    //же, поля другие. Именно на этом и терялась правка, сделанная во время отправки.
+    rev: (prev?.rev ?? 0) + 1,
     queuedAt: Date.now(),
     tries: 0,
     lastError: '',
@@ -167,6 +195,10 @@ export function enqueueLessonUpdate(id, payload) {
     const create = pending.value.find((e) => e.key === `lesson.create|${id}`)
     if (create) {
       create.payload = { ...create.payload, ...payload }
+      //⚠️ Версию двигаем ВСЕГДА, а не только когда запись в полёте. Проверять «летит ли
+      //прямо сейчас» пришлось бы в каждом месте правки — то есть завести ещё одно
+      //место, где однажды забудут. Счётчик дешевле любой проверки.
+      create.rev = (create.rev ?? 0) + 1
       persist()
       return create.key
     }
@@ -181,6 +213,12 @@ export function enqueueLessonUpdate(id, payload) {
  */
 export function enqueueLessonDelete(id) {
   if (isTempId(id)) {
+    //🔥 Занятие уже летит на сервер — «просто убрать из очереди» здесь НЕПРАВДА: оно
+    //там появится, а удалять будет нечем. Запоминаем намерение и исполним его, как
+    //только сервер вернёт настоящий id.
+    if (inFlight && inFlight.key === `lesson.create|${id}`) {
+      deleteAfterCreate.add(id)
+    }
     pending.value = pending.value.filter((e) => !referencesLesson(e, id))
     persist()
     return ''
@@ -235,6 +273,7 @@ export function dismissRejected(key) {
 export function clearOutbox() {
   pending.value = []
   rejected.value = []
+  deleteAfterCreate.clear()
   save(LS_PREFIX, pending)
   save(LS_REJECTED, rejected)
 }
@@ -319,19 +358,45 @@ export async function flushOutbox() {
     for (const entry of [...pending.value].sort((a, b) => a.seq - b.seq)) {
       // Запись могли переписать или удалить, пока шёл предыдущий запрос.
       if (!pending.value.includes(entry)) continue
+      const sentRev = entry.rev ?? 0
+      inFlight = { key: entry.key, rev: sentRev }
       try {
         const resp = await send(entry)
+        //🔑 СНАЧАЛА разбираемся, что произошло с записью ПОКА мы ждали ответ, и только
+        //потом убираем её из очереди. Прежний порядок («убрали, потом разобрались»)
+        //и терял правку: она была применена к объекту, которого уже нет в очереди.
+        const changed = (entry.rev ?? 0) !== sentRev
         pending.value = pending.value.filter((e) => e !== entry)
         if (entry.kind === 'lesson.create') {
           const realId = resp?.data?.id
-          if (realId) remapTempId(entry.payload.__tempId, realId)
-          else {
+          if (realId) {
+            remapTempId(entry.payload.__tempId, realId)
+            //Занятие удалили, пока оно летело: теперь id известен — удаляем по-настоящему.
+            if (deleteAfterCreate.delete(entry.payload.__tempId)) {
+              enqueue('lesson.delete', `lesson.delete|${realId}`, { id: realId })
+            } else if (changed) {
+              //Человек поправил занятие, пока летело создание. Сервер сохранил прежние
+              //поля — досылаем правку отдельной операцией, уже по настоящему id.
+              const body = { ...entry.payload }
+              delete body.__tempId
+              enqueue('lesson.update', `lesson.update|${realId}`, { id: realId, ...body })
+            }
+          } else {
             // Сервер принял, но id не вернул — редкость, однако тогда оценки по этому
             // занятию отправить некуда. Честно признаём это, а не шлём их в никуда.
             dropDependents(entry.payload.__tempId,
               'занятие создано, но сервер не вернул его номер')
+            deleteAfterCreate.delete(entry.payload.__tempId)
           }
         }
+        //⚠️ ВЕТКИ «обычная запись изменилась в полёте» здесь НЕТ, и это не забывчивость.
+        //Обычный `enqueue` не правит запись на месте: он выбрасывает прежнюю по ключу и
+        //кладёт НОВЫЙ объект. Значит правка оценки во время отправки уже уцелела сама —
+        //старый объект уходит из очереди, свежий остаётся и уедет следующим кругом.
+        //Мутируется на месте РОВНО ОДИН случай — слияние правки с ещё не уехавшим
+        //созданием занятия (`enqueueLessonUpdate` по временному id), и именно он выше.
+        //Дописать сюда «на всякий случай» ещё одну ветку значило бы отправить оценку
+        //дважды и завести код, который невозможно ни проверить, ни отладить.
         persist()
         stats.sent += 1
       } catch (err) {
@@ -380,6 +445,7 @@ export async function flushOutbox() {
       }
     }
   } finally {
+    inFlight = null
     flushing.value = false
   }
   return stats

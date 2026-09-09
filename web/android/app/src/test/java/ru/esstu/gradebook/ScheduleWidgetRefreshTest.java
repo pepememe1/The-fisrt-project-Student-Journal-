@@ -182,13 +182,60 @@ public class ScheduleWidgetRefreshTest {
         //Индекс преподавателей ещё строится — расписания нет, но и ошибки нет.
         assertNull(ScheduleWidgetRefresh.snapshotFrom(
                 new JSONObject().put("available", true).put("building", true), prev));
-        //Дни есть, но все пустые: перезаписывать рабочий снимок пустотой нельзя —
-        //устаревшее расписание полезнее, чем «пар нет» посреди учебной недели.
+        //⚠️ ЗДЕСЬ СТОЯЛА ТРЕТЬЯ ПРОВЕРКА — «дни есть, но все пустые → null», с пояснением
+        //«устаревшее расписание полезнее, чем „пар нет“ посреди учебной недели». Она
+        //ПЕРЕЕХАЛА в отдельный тест ниже С ПРОТИВОПОЛОЖНЫМ ожиданием, и это не подгонка
+        //ожидания под код, а отмена самого решения — см. emptyScheduleIsAnAnswerNotAFailure.
+    }
+
+    /**
+     * 🔥 ПУСТОЕ РАСПИСАНИЕ — ЭТО ОТВЕТ, А НЕ ОТКАЗ (07.09.2026).
+     *
+     * Прежде `snapshotFrom` возвращал null и на непригодный ответ, и на корректный ответ
+     * с нулём пар. Оба случая оставляли на экране ПРОШЛЫЙ снимок. Для первого это верно
+     * («не знаем — не трогаем»), для второго — нет: каникулы, отменённые занятия и
+     * очищенное расписание давали виджет, показывающий пары, которых нет. Студент
+     * собирался на занятие по нашему виджету.
+     *
+     * Разница между случаями измеримая, а не оценочная: «ответ повреждён» — это когда
+     * нет `available` или нет тела `weeks`; «пар нет» — когда тело есть и оно пустое.
+     * Обе проверки стоят ВЫШЕ по коду и уже отсеяли всё, о чём судить нельзя.
+     */
+    @Test
+    public void emptyScheduleIsAnAnswerNotAFailure() throws Exception {
+        JSONObject prev = prevSnapshot("group", "К74/1");
         JSONObject empty = new JSONObject()
                 .put("available", true)
                 .put("schedule", new JSONObject().put("weeks", new JSONObject()
                         .put("1", new JSONObject().put("Пнд", new org.json.JSONArray()))));
-        assertNull(ScheduleWidgetRefresh.snapshotFrom(empty, prev));
+
+        JSONObject snap = ScheduleWidgetRefresh.snapshotFrom(empty, prev);
+        assertNotNull("корректный ответ «пар нет» обязан обновить снимок", snap);
+        assertEquals(0, snap.optJSONObject("days").length());
+        assertTrue("снимок обязан помечать себя пустым ПО ДАННЫМ, а не по неудаче",
+                snap.optBoolean("empty", false));
+        //Заголовок и цель берём из прежнего снимка — публичная ручка их не знает.
+        assertEquals("К74/1", snap.optJSONObject("target").optString("name"));
+    }
+
+    @Test
+    public void aBrokenResponseStillKeepsTheOldSnapshot() throws Exception {
+        JSONObject prev = prevSnapshot("group", "К74/1");
+        //Тела расписания нет вовсе — вот это и есть «не знаем». Здесь прежнее решение
+        //остаётся в силе: устаревшее лучше пустого, потому что правды у нас нет.
+        assertNull(ScheduleWidgetRefresh.snapshotFrom(
+                new JSONObject().put("available", true), prev));
+        assertNull(ScheduleWidgetRefresh.snapshotFrom(
+                new JSONObject().put("available", true).put("schedule", new JSONObject()), prev));
+    }
+
+    @Test
+    public void aRealScheduleIsNotMarkedEmpty() throws Exception {
+        JSONObject snap = ScheduleWidgetRefresh.snapshotFrom(
+                groupResponse(), prevSnapshot("group", "К74/1"));
+        assertNotNull(snap);
+        assertFalse("непустое расписание не имеет права помечаться как «пар нет»",
+                snap.optBoolean("empty", false));
     }
 
     @Test

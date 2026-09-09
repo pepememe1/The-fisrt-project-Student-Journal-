@@ -345,7 +345,13 @@ const showRecover = ref(false)
           <p class="mt-1.5 hidden text-center text-tiny text-text3 sm:block">Функция настраивается в настройках профиля</p>
         </div>
 
+        <!-- Вход общий для трёх ролей. Раньше первым и единственным явным ориентиром
+             был «Для обучающихся», а пояснение преподавателю исчезало на телефоне;
+             родитель вообще не видел, что эта форма ему подходит. Регистрация остаётся
+             только студенческой, но принадлежность самой формы теперь названа до выбора
+             действия — человеку не приходится угадывать свой маршрут. -->
         <div class="mt-3 border-t border-border pt-2.5 text-center sm:mt-4 sm:pt-3">
+          <p class="text-xs font-semibold text-text2">{{ loc.t('login.audience') }}</p>
           <p class="text-xs text-text3">{{ loc.t('login.forStudents') }}</p>
           <div class="mt-1.5 flex flex-wrap items-center justify-center gap-2">
             <button type="button" class="rounded-sm border border-accent/40 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent-glow"
@@ -353,7 +359,7 @@ const showRecover = ref(false)
             <button type="button" class="rounded-sm border border-border2 px-3 py-1.5 text-xs font-medium text-text3 transition-colors hover:border-accent hover:text-accent"
                     @click="showRecover = true">{{ loc.t('login.recover') }}</button>
           </div>
-          <p class="mt-2 hidden text-tiny text-text3 sm:block">Преподаватели и админ входят по данным от администратора.</p>
+          <p class="mt-2 text-tiny leading-relaxed text-text3">{{ loc.t('login.accountHelp') }}</p>
         </div>
 
         <!-- ⚠️ Кнопка одностраничника для приёмной комиссии здесь БЫЛА и убрана

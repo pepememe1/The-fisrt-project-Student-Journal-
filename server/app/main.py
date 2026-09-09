@@ -136,7 +136,15 @@ async def _canary(request: Request, call_next):
                 #и её незаписанное срабатывание это не «мелкая неудача», а отсутствие
                 #того единственного, ради чего она заведена.
                 log.exception("[canary] не удалось записать срабатывание приманки")
-        return HTMLResponse(canary.DECOY_HTML, status_code=200)
+        resp = HTMLResponse(canary.DECOY_HTML, status_code=200)
+        #«Мина» в заголовках: правдоподобный хеш служебной учётки в НАШЕЙ же схеме
+        #(`hybrid_sha512_gost512`). Сканер скормит его Hashcat и будет жечь GPU
+        #впустую. Мы при этом НИЧЕГО не считаем: хеш декоративный (случайные байты,
+        #прообраза нет), число итераций растёт по источнику (Moving Target). Разбор —
+        #`canary.mine_headers`. Ответ по-прежнему уходит мгновенно.
+        for _k, _v in canary.mine_headers(ip).items():
+            resp.headers[_k] = _v
+        return resp
 
     return await call_next(request)
 

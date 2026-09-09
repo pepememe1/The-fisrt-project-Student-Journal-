@@ -12,7 +12,7 @@
 // Кнопки выхода здесь НЕТ намеренно: она переехала в самый низ «Настроек» (отзыв
 // «случайно жму выход») — выход это редкое и необратимое действие, ему не место рядом
 // с постоянно нажимаемым меню.
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Moon, Sun, ChevronDown, SlidersHorizontal } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
@@ -78,6 +78,20 @@ const statusText = computed(() =>
 // уживалось с бодрым «Онлайн».
 const online = ref(navigator.onLine)
 function updateOnline() { online.value = navigator.onLine }
+
+// 🔥 ОБРАБОТЧИК, КОТОРЫЙ НЕ СНИМАЮТ, НАКАПЛИВАЕТСЯ (07.09.2026).
+//
+// Панель монтируется в сайдбаре, а на телефоне сайдбар — выезжающая шторка: каждое её
+// открытие создаёт новый экземпляр, каждое закрытие его уничтожает. `addEventListener`
+// был, парного `removeEventListener` не было вовсе — то есть за день работы на телефоне
+// на `online`/`offline` копилось столько обработчиков, сколько раз человек открыл меню,
+// и каждый скачок связи будил их все разом.
+// ⚠️ Отдельно от этого убран сам ИСТОЧНИК дубля (см. AppShell.vue): панель существовала
+// в двух экземплярах одновременно — скрытая CSS-классом десктопная и живая мобильная.
+onBeforeUnmount(() => {
+  window.removeEventListener('online', updateOnline)
+  window.removeEventListener('offline', updateOnline)
+})
 
 onMounted(async () => {
   window.addEventListener('online', updateOnline)

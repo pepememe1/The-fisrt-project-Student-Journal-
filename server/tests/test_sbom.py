@@ -19,7 +19,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-pytest.importorskip("json")
+#⚠️ Здесь стоял `pytest.importorskip("json")` — сторож, который не может сработать
+#НИКОГДА: json это стандартная библиотека. Такая строка не проверяет ничего, но
+#выглядит проверкой. Убрана 05.09.2026 при разборе слепых тестов.
 
 
 def _sbom():

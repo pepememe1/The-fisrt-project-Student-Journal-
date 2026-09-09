@@ -7,14 +7,39 @@ test_esstu_parser.py — parsers/esstu_parser.py на РЕАЛЬНЫХ сним�
 тесты были бы то зелёными, то красными в зависимости от того, жив ли сайт колледжа
 прямо сейчас, и тянули бы CI за собой в интернет.
 
-pdfplumber опционален (см. requirements) — модуль пропускается целиком, если пакета
-нет, той же формулой, что и в esstu_parser.py самом.
+🔥 ЗДЕСЬ БЫЛ МОДУЛЬНЫЙ `pytest.importorskip("pdfplumber")`, И ОН ГАСИЛ ВЕСЬ ФАЙЛ
+(найдено 05.09.2026). Докстринг называл пакет «опциональным» — это неправда: он
+ОБЪЯВЛЕН и в `server/requirements.txt`, и в `pyproject.toml`. Следствий два:
+
+  • на машине без пакета молча исчезали ВСЕ 17 проверок, прогон оставался зелёным —
+    то есть повторялся ровно тот дефект, который Полковник нашёл 04.09 в стороже
+    граней (`importorskip("yaml")` гасил 42 проверки из 42 в CI);
+  • девять тестов из семнадцати про PDF не знают ВООБЩЕ (список специальностей,
+    разбор HTML, выбор колонки индекса) — их гасило заодно, без всякой причины.
+
+⚠️ Правило проекта: пропускать можно по отсутствию ПРЕДМЕТА проверки, но не по
+отсутствию объявленного ИНСТРУМЕНТА. Нет пакета, который мы сами объявили
+зависимостью — это ОТКАЗ, и он обязан быть громким и называть, что поставить.
+Тесты, которым PDF не нужен, теперь идут всегда.
 """
 import pathlib
 
 import pytest
 
-pdfplumber = pytest.importorskip("pdfplumber", reason="pdfplumber не установлен")
+try:
+    import pdfplumber                                                   # noqa: F401
+    _PDFPLUMBER_ERROR = ""
+except Exception as _e:                                                 # pragma: no cover
+    _PDFPLUMBER_ERROR = str(_e)
+
+
+def _require_pdfplumber():
+    """Отказ вместо тихого пропуска: пакет объявлен, значит его отсутствие — поломка
+    окружения, а не «этой машине не досталось». Сообщение называет починку."""
+    if _PDFPLUMBER_ERROR:
+        pytest.fail("pdfplumber объявлен в server/requirements.txt, но не установлен "
+                    "(%s). Это не повод молча пропустить разбор учебных планов: "
+                    "поставьте пакет — pip install pdfplumber" % _PDFPLUMBER_ERROR)
 
 from app.parsers import esstu_parser as P  # noqa: E402
 
@@ -48,11 +73,13 @@ def directions_09_02_07_html():
 
 @pytest.fixture()
 def plan_09_02_07_pdf():
+    _require_pdfplumber()
     return (FIXTURES / "esstu_plan_09_02_07_2022.pdf").read_bytes()
 
 
 @pytest.fixture()
 def plan_09_02_06_pdf():
+    _require_pdfplumber()
     return (FIXTURES / "esstu_plan_09_02_06_2022.pdf").read_bytes()
 
 
@@ -62,6 +89,7 @@ def plan_09_02_07_2024_pdf():
     пустая служебная колонка — раньше это ловило _detect_hours_column
     в пустоту и возвращало 0 строк для ЛЮБОГО плана 2024/2025 (см.
     _detect_index_column)."""
+    _require_pdfplumber()
     return (FIXTURES / "esstu_plan_09_02_07_2024.pdf").read_bytes()
 
 
@@ -203,6 +231,11 @@ def test_pdf_parse_returns_empty_without_pdfplumber(monkeypatch, plan_09_02_07_p
 
 
 def test_pdf_parse_returns_empty_on_garbage_bytes():
+    """⚠️ Без пакета этот тест зеленел бы ПО НЕВЕРНОЙ ПРИЧИНЕ: `_parse_pdf_plan`
+    отдаёт [] и когда байты мусорные, и когда pdfplumber не импортировался.
+    Значит проверка «мусор не роняет разбор» подтверждалась бы отсутствием
+    инструмента, а не поведением продукта."""
+    _require_pdfplumber()
     assert P._parse_pdf_plan(b"not actually a pdf") == []
 
 

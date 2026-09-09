@@ -20,6 +20,7 @@ import BrandLogo from '@/components/BrandLogo.vue'
 import SidebarUserPanel from '@/components/SidebarUserPanel.vue'
 import ConnectionBadge from '@/components/ui/ConnectionBadge.vue'
 import SyncIssuesBadge from '@/components/ui/SyncIssuesBadge.vue'
+import RejectedWritesBadge from '@/components/ui/RejectedWritesBadge.vue'
 import AccessibilityMenu from '@/components/AccessibilityMenu.vue'
 import ReportProblemButton from '@/components/ReportProblemButton.vue'
 import SidebarResizer from '@/components/SidebarResizer.vue'
@@ -193,6 +194,17 @@ function isActive(to) {
          остаётся только на этом ПК. Появляется, лишь когда есть о чём сказать. -->
     <div class="shrink-0 px-3 pb-1">
       <SyncIssuesBadge v-if="!compact" />
+    </div>
+
+    <!-- 🔥 Отказы сервера — ОТДЕЛЬНО от соседа сверху и по ДРУГИМ правилам.
+         Тот про синхронизацию ПРОГРАММЫ (маршрута нет ни на сайте, ни в мобилке), этот —
+         про очередь офлайн-правок, которая живёт на всех трёх платформах: именно на
+         телефоне преподаватель и ставит оценки без сети.
+         ⚠️ БЕЗ `v-if="!compact"`. Свёрнутая панель не имеет права спрятать сообщение о
+         потерянной работе — а именно это и случилось с соседним значком (см. историю
+         desktopSync.js). Узкий столбец переживёт: содержимое переносится по словам. -->
+    <div class="shrink-0 px-3 pb-1">
+      <RejectedWritesBadge />
     </div>
 
     <!-- «Сообщить о проблеме» — встроенный канал обратной связи (ClassDojo, §9 №3).

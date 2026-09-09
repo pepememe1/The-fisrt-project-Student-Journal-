@@ -41,6 +41,24 @@ class SyncManager:
         self._on_synced = None   #колбэк после успешного цикла (для обновления UI)
         self._on_state = None    #колбэк смены онлайн/офлайн (для индикатора в шапке)
         self._wake = threading.Event()   #«будильник» для немедленного синка
+        #🔥 СОСТОЯНИЕ ЗЕРКАЛА — ОТДЕЛЬНО ОТ СОСТОЯНИЯ СИНКА (07.09.2026).
+        #Зеркало (`desktop/local_mirror.py`) наполняет ТУ базу, на которой работает
+        #Vue-интерфейс, а обычный синк — ДРУГУЮ. Раньше результат `mirror_once` просто
+        #выбрасывался: он возвращает {"ok": False, "error": ...}, а не бросает исключение,
+        #поэтому `except` вокруг вызова его не видел. Итог — тихая деградация худшего
+        #сорта: обмен со старой базой идёт, цикл ставит online=True, а человек смотрит на
+        #устаревшие данные и не имеет НИ ОДНОГО признака этого. Причина была только в логе.
+        #🔥 СИГНАЛ ОСТАНОВКИ — СВОЙ У КАЖДОГО ЗАПУСКА (07.09.2026).
+        #Прежде цикл жил на общем поле `self._running`: stop() ставил его в False и
+        #НЕ ЖДАЛ завершения потока, а следующий start() тут же возвращал его в True.
+        #Старый поток к этому моменту спал в `_wake.wait(...)` — просыпался, видел снова
+        #True и продолжал работать РЯДОМ с новым. Два цикла на одну базу и один сетевой
+        #клиент: гонка за токеном, двойные push и пересоздание клиента под чужой ногой.
+        #Общего изменяемого флага здесь недостаточно по построению — нужен объект,
+        #принадлежащий КОНКРЕТНОМУ запуску, который старый поток не может «разостановить».
+        self._stop_evt = None        #threading.Event текущего запуска
+        self._mirror_error = ""
+        self._mirror_ok_at = ""      #ISO-время последнего УСПЕШНОГО обновления копии
         #Сохранённый токен пробуем РОВНО один раз за сессию входа: если он протух,
         #дальше идём по паролю, а не крутим бесконечно негодный токен.
         self._saved_token_tried = False
@@ -101,7 +119,11 @@ class SyncManager:
         return {"online": self._online, "fails": self._fail_count,
                 "error": self._last_error, "auth_error": self._auth_error,
                 "rejected": last_rejected(),
-                "conflicts": DBManager.count_unresolved_conflicts()}
+                "conflicts": DBManager.count_unresolved_conflicts(),
+                #ПЯТОЕ состояние, и оно тоже отдельное: обмен может идти прекрасно, а
+                #копия, из которой рисуется журнал, — стоять. Пустая строка = бед нет.
+                "mirror_error": self._mirror_error,
+                "mirror_ok_at": self._mirror_ok_at}
 
     def _set_online(self, online: bool, error: str = ""):
         """Обновить онлайн-состояние; колбэк дёргаем только при РЕАЛЬНОЙ смене."""
@@ -183,13 +205,41 @@ class SyncManager:
         self._need_reconcile = True
         if self._running:
             return
+        #Предыдущий поток мог ещё не выйти (stop() его не ждёт — см. ниже, почему).
+        #Дожидаемся ЗДЕСЬ, а не в stop(): выход из аккаунта и закрытие программы не
+        #должны стоять на сетевом таймауте, а вот запуск второго цикла поверх живого
+        #первого недопустим совсем.
+        self._join_previous()
         self._running = True
+        self._stop_evt = threading.Event()
         self._wake.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread = threading.Thread(target=self._loop, args=(self._stop_evt,),
+                                        daemon=True)
         self._thread.start()
+
+    def _join_previous(self, timeout: float = 5.0):
+        """Дождаться завершения прежнего фонового потока (если он ещё жив).
+
+        Таймаут намеренный и не «на всякий случай»: поток может стоять в сетевом вызове
+        с чтением до 45 c, а держать вход человека всё это время нельзя. Не дождались —
+        новый цикл всё равно безопасен: старый работает по СВОЕМУ `_stop_evt`, который
+        уже взведён, и выйдет на ближайшей проверке, не тронув чужое состояние."""
+        t = self._thread
+        if t is None or not t.is_alive() or t is threading.current_thread():
+            return
+        t.join(timeout=timeout)
+        if t.is_alive():
+            _log.warning("прежний поток синка ещё не завершился — новый цикл стартует "
+                         "рядом, старый выйдет по своему сигналу остановки")
 
     def stop(self):
         self._running = False
+        #Взводим сигнал ИМЕННО ЭТОГО запуска. Даже если следующий start() вернёт
+        #`self._running` в True раньше, чем старый поток проснётся, — его собственный
+        #`_stop_evt` останется взведённым, и он выйдет. Это и есть разница между
+        #«общий флаг» и «сигнал на запуск».
+        if self._stop_evt is not None:
+            self._stop_evt.set()
         self._client = None
         self._wake.set()   #будим цикл, чтобы он завершился сразу, а не через интервал
 
@@ -334,9 +384,11 @@ class SyncManager:
         if self._client.refresh_token:
             app_settings.set_saved_refresh_token(self._login, self._client.refresh_token)
 
-    def _loop(self):
+    def _loop(self, stop_evt=None):
         from sync import sync_engine
-        while self._running:
+        #Условие двойное и оба нужны: `_running` гасит цикл штатно, `stop_evt` —
+        #персонально этот поток, даже если поле уже вернули в True новым запуском.
+        while self._running and not (stop_evt is not None and stop_evt.is_set()):
             #Адрес сервера читаем КАЖДЫЙ цикл, а не один раз при старте: на хост-ПК он
             #появляется уже после входа (админ поднимает сервер), а у serveo поддомен
             #может смениться между запусками. Нет адреса — тихо ждём и проверяем снова.
@@ -474,7 +526,11 @@ class SyncManager:
         if self._fail_count > 0:
             delay = min(self._interval * (2 ** min(self._fail_count, 4)), 300)
         self._wake.wait(timeout=delay)
-        self._wake.clear()
+        #⚠️ Флаг общего «будильника» чистим ТОЛЬКО пока цикл действительно живой. Иначе
+        #уходящий поток съел бы сигнал, предназначенный новому: тот проспал бы полный
+        #интервал вместо немедленного синка.
+        if self._running:
+            self._wake.clear()
 
     def push_my_prefs(self, prefs: dict):
         """Отправить личные настройки (тему оформления) текущего пользователя на сервер.
@@ -535,9 +591,28 @@ class SyncManager:
         пакета рядом (`server/`) его просто нет, и это штатная ситуация, а не сбой."""
         try:
             from desktop import local_mirror
-            local_mirror.mirror_once(client=self._client)
         except Exception as e:
-            _log.debug(f"[mirror] пропущено: {e}")
+            #Серверного пакета рядом нет — зеркала в этой сборке не существует вовсе.
+            #Это НЕ беда копии, и записывать её в mirror_error нельзя: человек увидел бы
+            #вечную жалобу там, где всё работает как задумано.
+            _log.debug(f"[mirror] модуль недоступен: {e}")
+            return
+        try:
+            res = local_mirror.mirror_once(client=self._client) or {}
+        except Exception as e:
+            #Исключение — тоже отказ зеркала, и молчать о нём нельзя ровно так же.
+            self._mirror_error = str(e)
+            _log.warning(f"[mirror] сорвалось: {e}")
+            return
+        #🔑 РЕЗУЛЬТАТ ЧИТАЕМ. Прежде он выбрасывался, и это был не недосмотр в одну
+        #строку, а целый невидимый режим отказа: `mirror_once` про неудачу СООБЩАЕТ
+        #(ok=False + error), а не бросает.
+        if res.get("ok"):
+            self._mirror_error = ""
+            self._mirror_ok_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        else:
+            self._mirror_error = str(res.get("error") or "копия не обновилась")
+            _log.warning(f"[mirror] копия не обновилась: {self._mirror_error}")
 
     def flush_now(self):
         """Синхронный один цикл синхронизации ПРЯМО СЕЙЧАС — для выхода из аккаунта и

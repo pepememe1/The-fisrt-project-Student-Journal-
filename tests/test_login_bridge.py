@@ -37,6 +37,25 @@ _remembered = []
 _ORIGINAL_REMEMBER = local_api._remember_session
 _ORIGINAL_SWITCH = local_api.switch_user_db
 
+#🔥 ВТОРАЯ СТУПЕНЬ ВХОДА ХОДИЛА НА БОЕВОЙ СЕРВЕР (найдено 05.09.2026).
+#Локальная проверка неверного пароля не проходит по построению, и мост честно шёл дальше
+#— к настоящему бою: `app_settings.get_api_url()` без настройки отдаёт ЗАШИТЫЙ боевой
+#домен. То есть каждый полный прогон совершал на проде неудачные попытки входа, кормил
+#его анти-брутфорс и писал в его журнал аудита. После нескольких прогонов подряд бой
+#отвечал 429, мост отдавал 503 «нет связи» вместо 401 — и два теста краснели при
+#полностью исправном коде.
+#⚠️ Заглушка ставится НЕ ради «чтобы позеленело»: проверяемое здесь свойство — как мост
+#ПЕРЕВОДИТ ответ второй ступени в ответ человеку, а не работает ли сегодня интернет.
+#Обе ветки («сервер сказал нет» и «до сервера не дошли») теперь проверяются отдельно и
+#детерминированно — раньше вторая не проверялась вовсе.
+_remote_answer = [(None, "unauthorized")]
+_remote_calls = []
+
+
+def _fake_remote(login: str, password: str):
+    _remote_calls.append((login, password))
+    return _remote_answer[0]
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _no_real_session():
@@ -50,9 +69,12 @@ def _no_real_session():
     original = local_api._remember_session
     local_api._remember_session = lambda login, password, role: _remembered.append(
         (login, role))
+    original_remote = local_api._try_remote_login
+    local_api._try_remote_login = _fake_remote
     yield
     local_api._remember_session = original
     local_api.switch_user_db = original_switch
+    local_api._try_remote_login = original_remote
 
 
 @pytest.fixture(scope="module")
@@ -121,6 +143,12 @@ def test_issued_token_opens_the_cabinet(api):
 
 
 def test_wrong_password_is_refused(api):
+    """Сервер сказал «нет» → человеку 401.
+
+    Локальная ступень неверный пароль не пропускает по построению, поэтому запрос
+    доходит до второй ступени — она здесь заглушена (см. `_fake_remote`), иначе тест
+    ходил бы на настоящий бой."""
+    _remote_answer[0] = (None, "unauthorized")
     code, _ = _post(api, "/auth/login", {"login": "loc", "password": "не тот"})
     assert code == 401
 
@@ -128,9 +156,36 @@ def test_wrong_password_is_refused(api):
 def test_error_does_not_reveal_whether_login_exists(api):
     """Ответ одинаков для «нет такого логина» и «пароль не тот»: разделение подсказало бы
     подбирающему, какие логины существуют."""
+    _remote_answer[0] = (None, "unauthorized")
     _, a = _post(api, "/auth/login", {"login": "loc", "password": "не тот"})
     _, b = _post(api, "/auth/login", {"login": "нет-такого-человека", "password": "x"})
     assert a.get("detail") == b.get("detail")
+
+
+def test_unreachable_server_says_so_instead_of_blaming_the_password(api):
+    """🔥 Эта ветка НЕ ПРОВЕРЯЛАСЬ ВООБЩЕ, пока вторая ступень ходила на живой бой.
+
+    «До сервера не дошли» и «сервер отклонил» — разные события, и путать их дорого:
+    ответ «неверный логин или пароль» отправляет человека менять пароль вместо того,
+    чтобы проверить связь. Поэтому здесь 503 и текст про связь, а не 401."""
+    _remote_answer[0] = (None, "offline: ConnectError: сеть недоступна")
+    code, body = _post(api, "/auth/login", {"login": "loc", "password": "не тот"})
+    assert code == 503, body
+    assert "сервер" in (body.get("detail") or "").lower()
+    _remote_answer[0] = (None, "unauthorized")
+
+
+def test_the_ladder_really_reaches_the_second_step(api):
+    """Обратный ход заглушки: она обязана ВЫЗЫВАТЬСЯ.
+
+    ⚠️ Без этой проверки заглушка второй ступени неотличима от ситуации «до неё вообще
+    не доходит»: тесты выше зеленели бы и в том случае, если бы мост отвечал 401 сам, не
+    спрашивая сервер, — то есть перестал бы пускать тех, кого в локальной копии ещё нет.
+    Ровно наш класс «зелёный тест рядом с дефектом»."""
+    _remote_answer[0] = (None, "unauthorized")
+    _remote_calls.clear()
+    _post(api, "/auth/login", {"login": "loc", "password": "не тот"})
+    assert _remote_calls, "мост не дошёл до второй ступени — ladder сломан"
 
 
 def test_empty_fields_are_rejected(api):

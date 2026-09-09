@@ -26,6 +26,9 @@ def _reset():
     #⚠️ Дедупликация записей живёт в памяти модуля и переживает тесты: без сброса
     #второй тест в файле не увидел бы своей записи и был бы зелёным по чужой причине.
     canary.reset_seen()
+    #Счётчик Moving Target тоже в памяти модуля: без сброса «повторное» касание
+    #в новом тесте унаследовало бы число итераций от предыдущего.
+    canary.reset_mine()
 
 
 # ── приманки ────────────────────────────────────────────────────────────────────────
@@ -372,3 +375,110 @@ def test_the_live_console_still_shows_where_it_came_from(client, monkeypatch):
         "в живой консоли нет признака источника: админ видит «canary.hit /.env» и не "
         "может сказать, один это сканер или десять")
     assert "198.51.100.9" not in src, "в живую консоль утёк сырой адрес"
+
+
+# ── «мина» в заголовках (Moving Target) ─────────────────────────────────────────────
+
+import re as _re
+
+_MINE_RE = _re.compile(r"^hybrid_sha512_gost512\$(\d+)-(\d+)\$([0-9a-f]+)\$([0-9a-f]+)$")
+
+
+def _mine_iters_of(resp):
+    """Достать число SHA-итераций из заголовка-мины ответа. Заодно проверяет форму."""
+    v = resp.headers.get(canary.MINE_HEADER)
+    assert v, "в ответе приманки нет заголовка-мины"
+    m = _MINE_RE.match(v)
+    assert m, "заголовок-мина не в нашем формате hybrid_sha512_gost512$..: %r" % v
+    return int(m.group(1))
+
+
+def test_canary_response_carries_the_header_mine(client, monkeypatch):
+    """Ответ приманки несёт «мину» в НАШЕМ формате, обычный путь — нет.
+
+    Мина должна быть видна консольным утилитам (curl показывает заголовки), поэтому она
+    едет заголовком, а не в теле. Форма имитирует `security.py::hash_password`, чтобы
+    сканер принял её за настоящий хеш и скормил Hashcat.
+
+    Обратный ход: убери из `main._canary` цикл `for _k,_v in canary.mine_headers(...)`
+    — тест краснеет (заголовка нет).
+    """
+    _reset()
+    monkeypatch.setattr(throttle, "is_trusted", lambda ip: False)
+
+    r = client.get("/.env")
+    assert r.status_code == 200
+    #Форма проверяется здесь же — падение с внятным сообщением.
+    _mine_iters_of(r)
+
+    #Обычная страница мины НЕ несёт: заголовок — признак попадания в приманку.
+    _reset()
+    r2 = client.get("/health")
+    assert canary.MINE_HEADER not in r2.headers, "мина утекла на законный путь"
+
+
+def test_the_mine_costs_us_nothing_and_leaks_nothing(monkeypatch):
+    """🔴 CPU у НАС = 0, и ни одного настоящего секрета в мине.
+
+    Смысл «Бесконечного Стрибога»: под случайные 64 байта нет прообраза, значит перебор
+    бесконечен, а мы при этом не хешируем НИЧЕГО. Настоящий хеш стоил бы нам 200 000
+    итераций на запрос (на одном ядре — оружие против самих себя) и дал бы атакующему
+    ответ, на котором перебор кончается.
+
+    Обратный ход: начни в `mine_headers` считать реальный хеш через `security` — сторож
+    по тексту модуля краснеет; захардкодь `JWT_SECRET` в значение — краснеет проверка
+    утечки.
+    """
+    import inspect
+    src = inspect.getsource(canary)
+    #Модуль приманки не имеет права считать настоящий KDF — иначе это не мина, а
+    #самоограбление процессора. `security.py` эти токены содержит, `canary.py` — не смеет.
+    for bad in ("pbkdf2", "hash_password", "_gost_pbkdf2", "import security",
+                "from .security", "from app.security"):
+        assert bad not in src, "в приманке появился настоящий расчёт хеша: %r" % bad
+
+    #Значение мины не содержит настоящего секрета сервера.
+    from app.config import JWT_SECRET
+    val = canary.mine_headers("203.0.113.9")[canary.MINE_HEADER]
+    assert JWT_SECRET not in val, "в мину утёк JWT_SECRET"
+
+    #Соль и «хеш» случайны — два ответа не совпадают (иначе цель для Hashcat статична).
+    a = canary.mine_headers("203.0.113.9")[canary.MINE_HEADER]
+    b = canary.mine_headers("203.0.113.9")[canary.MINE_HEADER]
+    assert a != b, "мина отдаёт один и тот же хеш — прогресс перебора не обнуляется"
+
+
+def test_moving_target_bumps_iterations_on_repeat(client, monkeypatch):
+    """🔴 MOVING TARGET: повторное касание с того же источника ПОДНИМАЕТ число итераций.
+
+    Для Hashcat смена параметров = новая задача, накопленный прогресс сбрасывается.
+    Источник ДОВЕРЕННЫЙ (is_trusted=True), чтобы бан не превратил второй запрос в 429 и
+    дал повторно получить плашку с миной — мина работает и против инсайдера.
+
+    Обратный ход: сделай в `_mine_iters` число постоянным (верни `_MINE_BASE_ITERS`) —
+    тест краснеет.
+    """
+    _reset()
+    monkeypatch.setattr(throttle, "is_trusted", lambda ip: True)   #бана нет — можно бить
+    monkeypatch.setattr(throttle, "client_ip", lambda request: "10.0.0.42")
+
+    first = _mine_iters_of(client.get("/.env"))
+    second = _mine_iters_of(client.get("/wp-login.php"))
+    third = _mine_iters_of(client.get("/.git/config"))
+    assert second > first, "итерации не выросли на повторном касании (Moving Target мёртв)"
+    assert third > second, "итерации перестали расти со второго касания"
+
+
+def test_mine_iterations_have_a_ceiling():
+    """Число итераций не растёт бесконечно — иначе оно перестаёт быть правдоподобным.
+
+    Правдоподобие и есть оружие: неправдоподобно огромное число сканер отбросит как
+    мусор и не станет тратить на него GPU.
+    """
+    canary.reset_mine()
+    import time
+    now = time.time()
+    last = 0
+    for _ in range(100):
+        last = canary._mine_iters("198.51.100.200", now)
+    assert last == canary._MINE_MAX_ITERS, "потолок итераций не соблюдается: %d" % last

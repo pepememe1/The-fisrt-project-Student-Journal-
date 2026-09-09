@@ -10,9 +10,9 @@ seed_demo.py — демо-данные для проверки веб-верси
 """
 from datetime import datetime, timezone
 
-from app.db import SessionLocal, init_db
-from app.models import User, Group, Subject, Lesson, Grade
-from app.security import hash_password
+from app.db import SessionLocal, init_db, default_term
+from app.models import (User, Group, Subject, Lesson, Grade, ParentLink, SubjectHours,
+                        parent_link_id, subject_hours_id, set_user_password)
 
 NOW = datetime.now(timezone.utc).isoformat()
 GROUP = "К74/1"
@@ -37,9 +37,32 @@ def main():
     try:
         upsert(db, Group, "id", "g:webtest", name=GROUP, subjects=[SUBJECT])
         upsert(db, Subject, "id", "s:webtest", name=SUBJECT)
-        upsert(db, User, "id", "stud:webtest", role="student", login="webtest",
-               password_hash=hash_password("webtest1"),
-               surname=SURNAME, name=NAME, group_name=GROUP)
+        student = upsert(db, User, "id", "stud:webtest", role="student", login="webtest",
+                         surname=SURNAME, name=NAME, full_name=f"{SURNAME} {NAME}", group_name=GROUP)
+        set_user_password(student, "webtest1")
+
+        # Три роли нужны не только тестам API: без них ручной UX-приёмке пришлось бы
+        # смотреть преподавателя и родителя через пустые или чужие кабинеты. Все записи
+        # идемпотентны и живут только в локальной demo-БД.
+        teacher = upsert(db, User, "id", "teach:webtest", role="teacher", login="teacherweb",
+                         full_name="Семёнова Анна Петровна", surname="Семёнова", name="Анна Петровна",
+                         subjects=[SUBJECT], curated_groups=[GROUP])
+        set_user_password(teacher, "teacherweb1")
+        parent = upsert(db, User, "id", "parent:webtest", role="parent", login="parentweb",
+                        full_name="Тестова Марина Сергеевна", surname="Тестова", name="Марина Сергеевна")
+        set_user_password(parent, "parentweb1")
+
+        year, semester = default_term()
+        hours = upsert(db, SubjectHours, "id", subject_hours_id(GROUP, SUBJECT, year, semester),
+                       group_name=GROUP, subject=SUBJECT, year=year, semester=semester,
+                       hours_total=72, teacher_id=teacher.id)
+        hours.updated_at = NOW
+        link_id = parent_link_id(parent.id, student.id)
+        link = db.get(ParentLink, link_id)
+        if link is None:
+            link = ParentLink(id=link_id, parent_id=parent.id, student_id=student.id)
+            db.add(link)
+        link.status, link.created_at, link.created_by, link.decided_at = "active", NOW, "demo-seed", NOW
 
         lessons = [
             ("web-L1", "Практика", 1, "Переменные и типы", "05.09.2025", "5"),
@@ -60,6 +83,8 @@ def main():
         print("  логин:  webtest")
         print("  пароль: webtest1")
         print(f"  группа: {GROUP}, предмет: {SUBJECT}, оценки: 5,4,5 (средний 4.67)")
+        print("  преподаватель: teacherweb / teacherweb1")
+        print("  родитель:      parentweb / parentweb1")
     finally:
         db.close()
 

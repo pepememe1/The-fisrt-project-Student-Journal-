@@ -55,6 +55,31 @@ def _db_path_from_url(url: str) -> str:
     return url.split("sqlite:///", 1)[-1]
 
 
+#🔥 БОЕВОЙ `.env` НЕ СОДЕРЖИТ `GRADEBOOK_DB_URL` ВОВСЕ (проверено на машине 05.09.2026).
+#Сервер и не требует его: `app/config.py` имеет УМОЛЧАНИЕ, и на бою работает именно оно.
+#А инструмент ротации читал только `.env` — то есть единственный механизм смены ключа
+#не находил боевую базу и падал сообщением «Ротация поддержана только для
+#SQLite/SQLCipher, а URL = ''», которое указывает совсем не на ту причину.
+#⚠️ Отказ был бы обнаружен ровно в день компрометации ключа — то есть в худший момент.
+#Литерал обязан совпадать с умолчанием `app/config.py`; расхождение держит
+#`server/tests/test_rotate_db_key.py::test_default_db_url_matches_the_server_default`.
+_DEFAULT_DB_URL = "sqlite:///./gradebook_server.db"
+
+
+def _db_path_from_env(env_path: str, url: str) -> str:
+    """Путь к файлу БД: из `.env`, а при его молчании — умолчание самого сервера.
+
+    Умолчание сервера относительное (`./gradebook_server.db`) и считается от РАБОЧЕГО
+    каталога службы, то есть от каталога рядом с `.env`. Раскрываем его именно так, а не
+    от текущего каталога вызывающего: иначе запуск из другого места молча взял бы
+    несуществующий файл.
+    """
+    if not (url or "").strip():
+        base = os.path.dirname(os.path.abspath(env_path))
+        return os.path.join(base, os.path.basename(_db_path_from_url(_DEFAULT_DB_URL)))
+    return _db_path_from_url(url)
+
+
 def _is_hex64(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{64}", s or ""))
 
@@ -214,20 +239,34 @@ def main() -> None:
     ap.add_argument("--env", default="/root/gb-deploy/server/.env",
                     help="путь к .env с GRADEBOOK_DB_KEY и GRADEBOOK_DB_URL")
     ap.add_argument("--db", default="", help="путь к файлу БД (по умолчанию из GRADEBOOK_DB_URL)")
+    #🔥 ФЛАГА `--check` НЕ СУЩЕСТВОВАЛО, ХОТЯ ЕГО ОБЕЩАЛИ ТРИ ДОКУМЕНТА (05.09.2026).
+    #Докстринг этого файла, CLAUDE.md и план безопасности называют «--check» РЕЖИМОМ, и
+    #по ним человек набирает именно его — а получает `unrecognized arguments: --check` в
+    #тот единственный день, когда ротация понадобилась. Поведение было верным (проверка
+    #и так шла по умолчанию), неверным было ОБЕЩАНИЕ. Флаг заведён явным и ничего не
+    #меняет: он лишь делает документированную команду рабочей.
+    ap.add_argument("--check", action="store_true",
+                    help="только проверка механизма на КОПИИ базы (режим по умолчанию)")
     ap.add_argument("--apply", action="store_true",
-                    help="настоящая ротация (иначе только --check, ничего не меняющий)")
+                    help="настоящая ротация (иначе только проверка, ничего не меняющая)")
     ap.add_argument("--new-key", default="",
                     help="новый ключ (64 hex). Пусто при --apply → сгенерировать случайный")
     ap.add_argument("--service", default="gradebook", help="имя systemd-сервиса для проверки")
     args = ap.parse_args()
 
+    if args.check and args.apply:
+        raise SystemExit("--check и --apply взаимоисключающи: первый ничего не меняет, "
+                         "второй меняет всё. Выбери одно.")
+
     env = _read_env(args.env)
     old_key = env.get("GRADEBOOK_DB_KEY", "")
     if not _is_hex64(old_key):
         raise SystemExit("GRADEBOOK_DB_KEY в .env отсутствует или не 64 hex — ротация невозможна.")
-    db = args.db or _db_path_from_url(env.get("GRADEBOOK_DB_URL", ""))
+    db = args.db or _db_path_from_env(args.env, env.get("GRADEBOOK_DB_URL", ""))
     if not db or not os.path.exists(db):
-        raise SystemExit(f"Файл БД не найден: {db!r} (задай --db или GRADEBOOK_DB_URL)")
+        raise SystemExit(
+            f"Файл БД не найден: {db!r}.\n"
+            "Задай путь явно: --db /root/gb-deploy/server/gradebook_server.db")
 
     try:
         import sqlcipher3  # noqa: F401

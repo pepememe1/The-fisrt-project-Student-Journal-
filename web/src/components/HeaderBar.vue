@@ -43,11 +43,16 @@ const fullName = computed(() => (auth.user?.name || '').trim())
     class="flex shrink-0 items-center gap-2 border-b border-border bg-bg2 px-2 lg:hidden"
     style="height: calc(48px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top);"
   >
+    <!-- На телефоне весь список разделов живёт за этой дверью. Один «гамбургер» хорошо
+         узнают разработчики, но для нового преподавателя или родителя он не объясняет,
+         где искать журнал, расписание и настройки. Короткая подпись делает действие
+         явным и не отнимает отдельную строку у контента. -->
     <button
-      class="grid size-9 shrink-0 place-items-center rounded-md text-text2 hover:bg-bg hover:text-accent"
+      class="flex h-9 shrink-0 items-center gap-1 rounded-md px-1.5 text-text2 hover:bg-bg hover:text-accent"
       :aria-label="locale.t('header.menu', 'Меню')" @click="emit('toggle-sidebar')"
     >
       <Menu class="size-5" />
+      <span class="text-xs font-semibold">{{ locale.t('header.menu', 'Меню') }}</span>
     </button>
 
     <p class="min-w-0 flex-1 truncate font-title text-sm font-bold text-text">{{ title }}</p>
