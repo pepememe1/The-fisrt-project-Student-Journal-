@@ -282,3 +282,33 @@ def test_nothing_touches_the_system_on_every_database_connection(monkeypatch):
     assert len(calls) <= 2, (
         "на каждое соединение с базой уходит %d обращений к системе (%s) — профиль "
         "железа считается заново вместо кэша" % (len(calls), calls[:6]))
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# ОТОБРАЖЕНИЕ ФАЙЛА БАЗЫ В ПАМЯТЬ (mmap_size)
+# ─────────────────────────────────────────────────────────────────────────────────
+
+def test_weak_machine_gets_no_mmap_at_all(machine):
+    """🔒 Тот же смысл, что у кеша: слабая машина получает РОВНО прежнее поведение.
+
+    Ноль здесь — не «выключили функцию», а значение SQLite по умолчанию: соединение на
+    боевом VPS настраивается в точности как до правки. Это важнее выигрыша: замеренный
+    выигрыш составил 1–3 мс из 26, а отображённый в память файл в сотни мегабайт на
+    машине с 960 МБ вытеснил бы страницы Caddy и Python, то есть увёл бы базу в своп.
+    """
+    machine(0.94, 1)
+    assert hostcaps.sqlite_mmap_bytes() == 0
+
+
+def test_workstation_gets_a_mmap_window(machine):
+    """На машине с 32 ГБ окно в 256 МБ незаметно, а замер показал устойчивый знак."""
+    machine(32, 16)
+    assert hostcaps.sqlite_mmap_bytes() == 256 * 1024 * 1024
+
+
+def test_mmap_value_is_a_whole_number_of_bytes(machine):
+    """Значение уходит прямо в текст PRAGMA — дробь или строка сломали бы запрос."""
+    for ram, cpus in ((0.94, 1), (32, 16), (0, 4)):
+        machine(ram, cpus)
+        v = hostcaps.sqlite_mmap_bytes()
+        assert isinstance(v, int) and not isinstance(v, bool) and v >= 0

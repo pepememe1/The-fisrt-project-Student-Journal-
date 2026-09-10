@@ -219,3 +219,68 @@ def test_prefs_still_have_an_upper_bound(client):
 
     r = client.post("/me/prefs", json={"junk": "x" * (200 * 1024)}, headers=teacher)
     assert r.status_code == 413
+
+#🔒 ТИП КАРТИНКИ ПРОВЕРЯЕТСЯ ПОИМЁННО, А НЕ «ЛЮБОЙ data:image/» (09.09.2026).
+#Замечание пришло из внешнего разбора и было наполовину верным: `data:image/svg+xml`
+#прежний префикс пропускал, но кражи токена из этого НЕ следовало — браузер рисует SVG
+#из `<img src>` в защищённом статическом режиме, скрипты внутри не исполняются.
+#Дыра, которой не было, держалась закрытой КОНТЕКСТОМ ОТРИСОВКИ на клиенте, а не нашей
+#проверкой, — и ровно поэтому список сужен: контекст меняет тот, кто правит вёрстку, и
+#связи с проверкой на сервере он не увидит.
+
+SVG_AVATAR = ("data:image/svg+xml;base64,"
+              "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+"
+              "YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=")
+
+
+def test_svg_avatar_is_not_accepted(client):
+    """SVG — документ со скриптами внутри, а не растр. В поле картинки ему не место."""
+    admin = make_admin(client)
+    teacher = make_teacher(client, admin)
+
+    r = client.post("/me/prefs", json={"avatar": SVG_AVATAR}, headers=teacher)
+    assert r.status_code == 200, r.text
+    #🔒 Обратный ход: вернуть в `me._AVATAR_DATA_PREFIXES` голое "data:image/" — и
+    #ожидание сразу становится самим SVG.
+    assert r.json()["prefs"]["avatar"] == "", (
+        "SVG прошёл в аватарку: белый список типов снова стал префиксом `data:image/`")
+
+
+def test_raster_types_that_already_lie_in_the_database_still_pass(client):
+    """Обратная половина, и она важнее запрета.
+
+    Проверка стоит на пути ЛЮБОЙ правки настроек, а не только смены аватарки: словарь
+    приходит слитым, и `avatar` в нём есть всегда. Сузив список до одного JPEG, который
+    отдаёт наш обрезчик, мы гасили бы в пустоту картинки, лежащие в боевой базе с прежних
+    версий, — человек менял бы тему и молча терял аватарку.
+    """
+    admin = make_admin(client)
+    teacher = make_teacher(client, admin)
+
+    for mime in ("png", "webp", "gif", "jpeg"):
+        pic = "data:image/%s;base64,AAAA" % mime
+        r = client.post("/me/prefs", json={"avatar": pic}, headers=teacher)
+        assert r.json()["prefs"]["avatar"] == pic, (
+            "растровый тип %s перестал приниматься — это тихая потеря аватарок" % mime)
+
+
+def test_the_whitelist_lives_in_one_place():
+    """Второй копии белого списка не существует — иначе она разойдётся молча.
+
+    Картинку беседы (`chats.set_chat_meta`) видят ВСЕ участники, а не один посетитель
+    профиля, и сузить список в одном месте из двух было бы легко. Поэтому проверяется
+    не поведение, а ОТСУТСТВИЕ второй двери: у беседы вызывается та же функция.
+    """
+    import inspect
+
+    from app.routers import me as me_mod
+    from app.routers.messenger import chats as chats_mod
+
+    box = {"avatar": SVG_AVATAR}
+    me_mod._sanitize_profile_media(box)
+    assert box["avatar"] == "", "сама функция перестала отбивать SVG"
+
+    src = inspect.getsource(chats_mod)
+    assert "_sanitize_profile_media" in src, (
+        "картинка беседы больше не проходит общую проверку — завелась вторая копия "
+        "белого списка, и разойдётся она молча")

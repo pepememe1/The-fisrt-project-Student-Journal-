@@ -451,3 +451,72 @@ def test_message_reply_quote_column_is_added_to_an_old_schema(client):
     assert not (got[1] or ""), "старому ответу подставили какую-то цитату"
 
     _ensure_message_addon_columns()   # идемпотентность — второй вызов не падает
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# СТАТИСТИКА ПЛАНИРОВЩИКА (PRAGMA optimize)
+# ─────────────────────────────────────────────────────────────────────────────────
+
+def test_startup_actually_refreshes_planner_stats(monkeypatch):
+    """🔒 Проверяем ВЫЗОВ, а не поведение функции.
+
+    Наш самый частый класс дефекта — «обещание без вызывающего»: функция есть, тесты её
+    поведения зелёные, а в продукте её не зовёт НИКТО. Здесь это особенно легко: убрать
+    строку из `init_db` можно правкой в один символ, и не покраснеет ничего — статистика
+    просто не обновится, а узнать об этом будет неоткуда.
+    """
+    from app import db as db_mod
+
+    called = []
+    monkeypatch.setattr(db_mod, "_refresh_query_planner_stats",
+                        lambda: called.append(1))
+    db_mod.init_db()
+    assert called, ("init_db больше не обновляет статистику планировщика — "
+                    "строку вызова удалили, и заметить это нечем")
+
+
+def test_planner_stats_failure_never_breaks_startup(monkeypatch):
+    """Сбой обновления статистики не имеет права уронить запуск службы.
+
+    Статистика — ускорение, а не условие работы. Упавший здесь старт означал бы, что
+    журнал недоступен всему колледжу из-за строки, без которой он прекрасно работает.
+    """
+    from app import db as db_mod
+
+    class _Boom:
+        def begin(self):
+            raise RuntimeError("база занята")
+
+    monkeypatch.setattr(db_mod, "engine", _Boom())
+    db_mod._refresh_query_planner_stats()          #не должно бросить
+
+
+def test_planner_stats_really_appear_on_this_machine():
+    """🔥 ОБРАТНАЯ ПОЛОВИНА, и она поймала настоящий дефект в день написания.
+
+    Первая версия проверяла ПОВЕДЕНИЕ `PRAGMA optimize` на отдельной базе — и покраснела.
+    Причина оказалась не в тесте: `optimize` анализирует только те таблицы, к которым
+    ТЕКУЩЕЕ соединение уже обращалось запросом, а на старте службы соединение свежее.
+    То есть рекомендация «звать optimize» дала бы у нас тихий холостой вызов.
+    Замер обеих сторон: stdlib sqlite3 3.40.1 статистику не создаёт, sqlcipher3 3.51.1
+    создаёт (поведение добавлено в 3.46). Версию SQLCipher на бою мы не знаем.
+
+    Поэтому проверяется РЕЗУЛЬТАТ у продукта: после вызова статистика обязана
+    существовать — на любом драйвере. Прогон идёт на stdlib-драйвере, то есть ровно на
+    строгой стороне, и без запасного `ANALYZE` этот тест краснеет.
+    """
+    from sqlalchemy import text
+
+    from app import db as db_mod
+
+    with db_mod.engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS sqlite_stat1"))
+
+    db_mod._refresh_query_planner_stats()
+
+    with db_mod.engine.begin() as conn:
+        have = conn.execute(text(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='sqlite_stat1'")).scalar()
+    assert have == 1, (
+        "после обновления статистики таблицы sqlite_stat1 нет — значит вызов оказался "
+        "холостым, а узнать об этом в бою было бы неоткуда")

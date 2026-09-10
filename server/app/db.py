@@ -162,11 +162,18 @@ def _sqlite_pragmas(dbapi_conn, _rec):
     # Они небольшие и живут доли секунды, а на диске это лишняя запись на том же SSD,
     # куда одновременно идёт WAL.
     cur.execute("PRAGMA temp_store=MEMORY")
-    # ⚠️ `mmap_size` НЕ ТРОГАЕМ СОЗНАТЕЛЬНО. По умолчанию в SQLite он и так 0, то есть
-    # «выключить mmap» здесь означало бы записать то, что уже верно, и создать
-    # впечатление, будто когда-то было иначе. Включать же его на машине, где ядру и так
-    # не хватает памяти под страничный кеш, нельзя: файл в сотни мегабайт вытеснял бы
-    # страницы Caddy и самого Python.
+    # ━━ ОТОБРАЖЕНИЕ ФАЙЛА В ПАМЯТЬ: ТОЛЬКО ТАМ, ГДЕ ПАМЯТЬ ЕСТЬ ━━━━━━━━━━━━━━━━━━━━━
+    # Здесь до 09.09.2026 стояло «mmap_size НЕ ТРОГАЕМ СОЗНАТЕЛЬНО», и довод был верным
+    # для боевого VPS, но опирался на рассуждение, а не на замер. Теперь замер есть
+    # (`server/bench_messenger.py --encrypt --paired-mmap 256`): на шифрованной базе в
+    # 922 500 сообщений выигрыш 1–3 мс из 26 на самом тяжёлом пути, знак устойчив.
+    # Величина мала, поэтому включаем ровно там, где включение ничего не стоит, —
+    # решает `hostcaps`, а не число в коде (то же правило, что у `cache_size`).
+    # ⚠️ Ноль — это НЕ «выключили»: ноль и есть значение SQLite по умолчанию, то есть на
+    # слабой машине соединение настраивается ровно как раньше.
+    _mmap = hostcaps.sqlite_mmap_bytes()
+    if _mmap:
+        cur.execute("PRAGMA mmap_size=%d" % _mmap)
     cur.close()
 
 
@@ -220,6 +227,59 @@ def init_db():
     _ensure_conversation_avatar_column()
     _ensure_hot_path_indexes()
     _migrate_slash_in_ids()
+    _refresh_query_planner_stats()
+
+
+def _refresh_query_planner_stats():
+    """Обновить статистику планировщика (`PRAGMA optimize`). Один раз, на старте.
+
+    ⚠️ ЗАМЕР, А НЕ СОВЕТ (09.09.2026). Внешний разбор предлагал звать это «при закрытии
+    каждого соединения», и первая моя реакция была «нельзя: ANALYZE ПИШЕТ, а запись —
+    наше единственное узкое место». Реакция оказалась неверной, и показал это замер:
+      • первый вызов на шифрованной базе в 198 МБ — 281 мс, пишет 16 строк статистики;
+      • повторные вызовы — 0.01–0.68 мс, потому что при свежей статистике `optimize`
+        не делает НИЧЕГО и ничего не пишет.
+    То есть дорогого «на каждом закрытии» нет. Но и весь выигрыш даёт первый вызов, а
+    соединения у нас живут в пуле и почти не закрываются — крючок на `close` был бы
+    холостым по построению. Отсюда единственное честное место: старт службы.
+
+    ⚠️ Что это даёт: 0…−2.4 мс на списке чатов преподавателя (26 мс). Величина на
+    границе шума стенда, знак непостоянен — поэтому здесь нет ни слова о «приросте
+    производительности». Смысл в другом: без статистики планировщик выбирает план по
+    умолчанию, и цена этого РАСТЁТ вместе с базой, а 281 мс на старте не стоят ничего.
+
+    🔥 И ГЛАВНОЕ, ЧТО НАШЛОСЬ ПРИ ПРОВЕРКЕ: `PRAGMA optimize` ЗАВИСИТ ОТ ВЕРСИИ SQLite,
+    и на старой молча не делает НИЧЕГО. Он анализирует только те таблицы, к которым
+    ТЕКУЩЕЕ СОЕДИНЕНИЕ уже обращалось запросом, — а на старте службы соединение свежее
+    и запросов на нём не было. Замерено обеими сторонами:
+      • stdlib sqlite3 3.40.1 — `optimize` на свежем соединении `sqlite_stat1` НЕ создаёт;
+      • sqlcipher3 3.51.1 — создаёт (в 3.46 добавили разбор таблиц вовсе без статистики).
+    Версию SQLCipher на боевой машине мы не знаем и знать не обязаны, а «настройка,
+    которая, возможно, работает» — это худший вид настройки: она создаёт уверенность и
+    не даёт эффекта. Поэтому после `optimize` проверяем ФАКТ (появилась ли таблица
+    статистики) и при её отсутствии зовём `ANALYZE` явно.
+
+    ⚠️ Цена явного `ANALYZE` замерена там же: 337 мс на базе 198 МБ, и он НЕ умеет
+    пропускать работу — повторный вызов стоит те же 304 мс. Поэтому он именно запасной
+    и только когда статистики нет вовсе, а не «на всякий случай каждый старт».
+
+    ⚠️ Молчаливого отказа быть не должно, но и падать нельзя: не обновилась статистика —
+    сервер работает ровно как раньше, просто скажет об этом в журнал.
+    """
+    if not _IS_SQLITE:
+        return
+    try:
+        with engine.begin() as conn:
+            #`analysis_limit` ограничивает работу ANALYZE: без него на очень большой базе
+            #первый вызов растёт вместе с ней, а нам нужен предсказуемый старт.
+            conn.exec_driver_sql("PRAGMA analysis_limit=400")
+            conn.exec_driver_sql("PRAGMA optimize")
+            have = conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='sqlite_stat1'").scalar()
+            if not have:
+                conn.exec_driver_sql("ANALYZE")
+    except Exception as e:                                          # noqa: BLE001
+        print("[db] статистика планировщика не обновлена: %s" % e)
 
 
 #━━ ИНДЕКСЫ ГОРЯЧИХ ПУТЕЙ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -233,6 +293,45 @@ def init_db():
 #⚠️ Список ведётся ПО ЗАМЕРУ, а не «на всякий случай». Лишний индекс не бесплатен: он
 #замедляет запись и занимает место, а узкое место SQLite — именно ЗАПИСЬ. Каждая строка
 #ниже обязана называть, какой замер её оправдывает.
+#━━ ИМЕНА В DDL ПРОВЕРЯЮТСЯ, А НЕ ПОДСТАВЛЯЮТСЯ КАК ЕСТЬ (09.09.2026) ━━━━━━━━━━━━━━━━
+#Имя таблицы, столбца и тип нельзя передать параметром запроса — SQLite их подстановку
+#не поддерживает, поэтому все мини-миграции собирают строку сами. Сегодня это безопасно:
+#значения приходят из литеральных списков в этом же файле, снаружи в них не попадает
+#ничего. Замечание внешнего разбора (09.09.2026) с этим и не спорит — он называет это
+#«неряшливостью, а не дырой», и он прав.
+#⚠️ Проверка заведена не от сегодняшнего риска, а от завтрашнего: список однажды начнут
+#собирать из настройки, из ответа `inspect` или из аргумента функции — и превращение
+#мини-миграции в исполняемый SQL пройдёт незамеченным, потому что рядом не будет ничего,
+#что об этом напомнит. Тот же приём, которым закрыт `desktop/server_admin.py`: граница
+#проводится КОДОМ, а не обещанием в комментарии.
+#⚠️ Отказ ГРОМКИЙ (исключение), а не «пропустим строку»: миграция, молча не создавшая
+#столбец, — это наш любимый тихий отказ, и он выясняется на первом запросе к базе.
+_DDL_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+#Тип колонки — тоже часть строки запроса. Форм у нас ровно две: «ТИП» и
+#«ТИП DEFAULT <литерал>»; ничего другого в списках не встречается.
+_DDL_TYPE_RE = re.compile(r"[A-Z]+(\(\d+\))?( DEFAULT ('[^']*'|-?\d+))?$")
+
+
+def _ddl_ident(value):
+    """Вернуть имя таблицы/столбца/индекса, годное для подстановки в DDL."""
+    if not isinstance(value, str) or not _DDL_IDENT_RE.match(value):
+        raise ValueError("недопустимое имя в DDL миграции: %r" % (value,))
+    return value
+
+
+def _ddl_columns(value):
+    """То же для списка столбцов индекса («a» или «a, b»)."""
+    parts = [p.strip() for p in str(value).split(",")]
+    return ", ".join(_ddl_ident(p) for p in parts)
+
+
+def _ddl_type(value):
+    """Тип столбца вместе с необязательным DEFAULT."""
+    if not isinstance(value, str) or not _DDL_TYPE_RE.match(value):
+        raise ValueError("недопустимый тип столбца в DDL миграции: %r" % (value,))
+    return value
+
+
 _HOT_INDEXES = [
     #Значок «N ответов» в тредах: `_attach_reply_counts` группирует по reply_to_id при
     #открытии ЛЮБОЙ беседы. Замер 09.09.2026 (server/bench_messenger.py, профиль big,
@@ -257,7 +356,8 @@ def _ensure_hot_path_indexes():
         try:
             with engine.begin() as conn:
                 conn.execute(text(
-                    "CREATE INDEX IF NOT EXISTS %s ON %s (%s)" % (name, table, columns)))
+                    "CREATE INDEX IF NOT EXISTS %s ON %s (%s)"
+                    % (_ddl_ident(name), _ddl_ident(table), _ddl_columns(columns))))
             print("[db] создан индекс %s (%s.%s)" % (name, table, columns))
         except Exception as e:
             #Индекс — ускорение, а не условие работы: не смогли создать — работаем как
@@ -316,7 +416,7 @@ def _ensure_audit_chain_columns():
         return
     with engine.begin() as conn:
         for name, coltype in missing:
-            conn.execute(text(f"ALTER TABLE audit_events ADD COLUMN {name} {coltype}"))
+            conn.execute(text("ALTER TABLE audit_events ADD COLUMN %s %s" % (_ddl_ident(name), _ddl_type(coltype))))
 
 
 def _ensure_quiz_kind_column():
@@ -381,7 +481,7 @@ def _ensure_message_addon_columns():
     with engine.begin() as conn:
         for name, coltype in wanted:
             if name not in columns:
-                conn.execute(text(f"ALTER TABLE messages ADD COLUMN {name} {coltype}"))
+                conn.execute(text("ALTER TABLE messages ADD COLUMN %s %s" % (_ddl_ident(name), _ddl_type(coltype))))
 
 
 def _ensure_conversation_system_columns():
@@ -397,7 +497,7 @@ def _ensure_conversation_system_columns():
     with engine.begin() as conn:
         for name, coltype in wanted:
             if name not in columns:
-                conn.execute(text(f"ALTER TABLE conversations ADD COLUMN {name} {coltype}"))
+                conn.execute(text("ALTER TABLE conversations ADD COLUMN %s %s" % (_ddl_ident(name), _ddl_type(coltype))))
 
 
 def _ensure_auth_session_client_column():
@@ -577,7 +677,7 @@ def _ensure_group_archive_columns():
     with engine.begin() as conn:
         for name, coltype in adds:
             if name not in columns:
-                conn.execute(text(f"ALTER TABLE groups ADD COLUMN {name} {coltype}"))
+                conn.execute(text("ALTER TABLE groups ADD COLUMN %s %s" % (_ddl_ident(name), _ddl_type(coltype))))
 
 
 def _ensure_user_prefs_column():

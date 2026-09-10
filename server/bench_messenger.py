@@ -24,9 +24,11 @@ bench_messenger.py — ЗАМЕР ГОРЯЧИХ ПУТЕЙ МЕССЕНДЖЕР
   • это НЕ нагрузочный тест: параллельных клиентов здесь нет, меряется стоимость ОДНОГО
     ответа. Умножать на число пользователей можно только грубо — но именно эта грубая
     оценка и показывает, хватает ли одного ядра;
-  • SQLCipher не включён (на машине разработки нет драйвера). Шифрование добавляет
-    примерно 5–15 % к CPU и НЕ меняет число запросов, то есть вывод про N+1 от него не
-    зависит;
+  • по умолчанию база НЕ шифрована, но это уже ВЫБОР, а не ограничение: ключом
+    `--encrypt` стенд поднимается поверх SQLCipher (драйвер на машине разработки есть).
+    Здесь до 09.09.2026 стояло «SQLCipher не включён, на машине разработки нет
+    драйвера» — неправда, проверяется одной строкой `import sqlcipher3`, и по ней
+    цена шифрования оценивалась на глаз («5–15 %») вместо замера;
   • данные синтетические. Распределение «сколько у кого бесед» взято правдоподобным
     (у преподавателя их заметно больше, чем у студента), но это модель, а не выгрузка
     боевой базы — её на машину разработчика класть нельзя (п. 5.2.4.1 политики ВСГУТУ).
@@ -47,10 +49,25 @@ import time
 
 #Изолированная база — строго ДО импорта приложения: config.py и db.py читают окружение
 #на этапе импорта и создают движок один раз (та же причина, что в tests/conftest.py).
-_BENCH_DB = os.path.join(tempfile.gettempdir(), "gradebook_bench.db")
+#⚠️ Ключи разбираем СВОИМ просмотром `sys.argv`, а не argparse: тот живёт в `main()`,
+#то есть уже ПОСЛЕ импорта `app.db`, а движок создаётся на импорте и второго шанса
+#задать шифрование не даёт.
+_ENCRYPT = "--encrypt" in sys.argv
+_BENCH_DB = os.path.join(tempfile.gettempdir(),
+                         "gradebook_bench_enc.db" if _ENCRYPT else "gradebook_bench.db")
+if _ENCRYPT and os.path.exists(_BENCH_DB):
+    #Файл от прошлого прогона мог быть создан ДРУГИМ ключом или вовсе без шифрования —
+    #тогда он не откроется, и выглядеть это будет как порча базы, а не как чужой ключ.
+    for _suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(_BENCH_DB + _suffix)
+        except OSError:
+            pass
 os.environ["GRADEBOOK_DB_URL"] = "sqlite:///" + _BENCH_DB.replace(os.sep, "/")
 os.environ.setdefault("GRADEBOOK_JWT_SECRET", "bench-secret-not-for-production")
-os.environ["GRADEBOOK_DB_KEY"] = ""
+#Ключ стенда ПОСТОЯННЫЙ и заведомо не боевой: он живёт в исходнике, и притворяться, что
+#это секрет, нельзя. База стенда содержит только выдуманные данные.
+os.environ["GRADEBOOK_DB_KEY"] = ("be0c" * 16) if _ENCRYPT else ""
 os.environ["GRADEBOOK_ALLOWED_ORIGINS"] = "*"
 os.environ["GRADEBOOK_DATA_KEY"] = ""
 os.environ["GRADEBOOK_INDEX_KEY"] = ""
@@ -97,6 +114,26 @@ class QueryCounter:
     def stop(self):
         self.on = False
         return self.n
+
+
+def apply_mmap(mib: int) -> None:
+    """Навесить `PRAGMA mmap_size` поверх продуктовых настроек соединения.
+
+    Продукт его СОЗНАТЕЛЬНО не задаёт (см. `db._sqlite_pragmas`), и трогать продукт ради
+    замера нельзя — иначе мы замерим не то, что работает у людей. Поэтому здесь свой
+    слушатель: он навешивается ПОСЛЕ продуктового и потому выполняется вторым.
+
+    ⚠️ Значение задаётся на КАЖДОЕ соединение, а не один раз на файл: mmap_size — это
+    настройка соединения, и у пула их несколько.
+    """
+    from app.db import engine as _eng
+
+    def _set(dbapi_conn, _rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA mmap_size=%d" % (mib * 1024 * 1024))
+        cur.close()
+
+    event.listen(_eng, "connect", _set)
 
 
 def seed(profile: str, seed_value: int = 20260909) -> dict:
@@ -208,8 +245,9 @@ def measure(name, fn, counter, repeat):
                 queries=queries)
 
 
-def run(profile: str, repeat: int) -> dict:
-    info = seed(profile)
+def run(profile: str, repeat: int, info: dict = None) -> dict:
+    #`info` передают, когда база УЖЕ наполнена и её надо мерить повторно (парный опыт).
+    info = seed(profile) if info is None else info
     counter = QueryCounter(engine)
     db = SessionLocal()
     student = db.query(User).filter(User.id == info["student_id"]).first()
@@ -234,17 +272,91 @@ def run(profile: str, repeat: int) -> dict:
     return dict(info=info, results=results)
 
 
+def paired(profile: str, repeat: int, label: str, change) -> None:
+    """Замерить ОДНУ наполненную базу тремя проходами: A, A2 (контроль), B.
+
+    ⚠️ Почему не два запуска и не два прохода. Разброс между отдельными ЗАПУСКАМИ
+    замерен и равен 17 % (25.7 … 30.5 мс на одной и той же настройке) — больше, чем вся
+    разница между настройками, то есть сравнение запусков меряет удачу.
+    А два прохода в одном процессе дают другую ошибку, и она обманчивее: второй проход
+    идёт по разогретому страничному кешу ОС и разогретым путям SQLAlchemy. Первый же
+    такой опыт показал «ускорение» ВСЕХ строк разом, включая карточку беседы, на
+    которую `mmap_size` влиять не может по построению.
+    Поэтому разогрев вынесен в СВОЙ проход: A2 отличается от A ровно им, а от B —
+    ровно проверяемым изменением. Эффект настройки читаем как B − A2.
+
+    ⚠️ Порядок «контроль ДО изменения» выбран намеренно: он годится и для необратимых
+    изменений вроде ANALYZE, статистику которого назад не вернёшь.
+    """
+    from app.db import engine as _eng
+
+    info = seed(profile)
+    print(f"\nБаза наполнена ОДИН раз: {info['messages']} сообщений "
+          f"({info['seconds']} с). Проверяем: {label}\n")
+
+    cold = run(profile, repeat, info=info)["results"]
+    warm = run(profile, repeat, info=info)["results"]
+    change()
+    _eng.dispose()          #слушатели `connect` действуют только на НОВЫЕ соединения
+    after = run(profile, repeat, info=info)["results"]
+
+    print(f"{'путь':<30}{'A хол.':>9}{'A2 тёпл.':>10}{'B':>8}"
+          f"{'разогрев':>10}{'эффект':>9}")
+    print("-" * 76)
+    for a, w, b in zip(cold, warm, after):
+        print(f"{a['name']:<30}{a['ms_p50']:>9}{w['ms_p50']:>10}{b['ms_p50']:>8}"
+              f"{w['ms_p50'] - a['ms_p50']:>+10.1f}{b['ms_p50'] - w['ms_p50']:>+9.1f}")
+    print("\n⚠️ Значим только столбец «эффект» (B − A2), и только если он заметно больше\n"
+          "   разброса повторов. «Разогрев» приведён затем, чтобы его нельзя было\n"
+          "   принять за эффект: именно так и выглядела первая версия этого опыта.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Замер горячих путей мессенджера")
     ap.add_argument("--scale", choices=list(PROFILES), default="small")
     ap.add_argument("--repeat", type=int, default=5)
     ap.add_argument("--json", default="")
+    ap.add_argument("--encrypt", action="store_true",
+                    help="поднять базу под SQLCipher (как на бою)")
+    ap.add_argument("--mmap", type=int, default=0, metavar="МБ",
+                    help="задать PRAGMA mmap_size (0 = как в продукте, выключен)")
+    ap.add_argument("--paired-mmap", type=int, default=0, metavar="МБ",
+                    help="парный опыт с контролем разогрева: mmap выкл -> вкл")
+    ap.add_argument("--paired-analyze", action="store_true",
+                    help="парный опыт с контролем разогрева: до и после PRAGMA optimize")
     args = ap.parse_args()
 
+    if args.paired_mmap:
+        paired(args.scale, args.repeat, "PRAGMA mmap_size = %d МБ" % args.paired_mmap,
+               lambda: apply_mmap(args.paired_mmap))
+        return
+    if args.paired_analyze:
+        #`PRAGMA optimize` при первом вызове на неанализированной базе и делает ANALYZE.
+        #Зовём его тем же способом, каким предлагает внешний разбор, — на соединении.
+        def _optimize():
+            from app.db import engine as _e
+            with _e.begin() as conn:
+                conn.exec_driver_sql("PRAGMA optimize")
+        paired(args.scale, args.repeat, "PRAGMA optimize (статистика планировщика)",
+               _optimize)
+        return
+    if args.mmap:
+        apply_mmap(args.mmap)
+
+    from app.db import DB_KEY as _key
+    encrypted = bool(_key)
+    if args.encrypt and not encrypted:
+        raise SystemExit("--encrypt задан, но движок поднялся БЕЗ шифрования: "
+                         "нет драйвера sqlcipher3. Замер шифрованной базы невозможен.")
+
     out = run(args.scale, args.repeat)
+    out["info"]["encrypted"] = encrypted
+    out["info"]["mmap_mib"] = args.mmap
     i = out["info"]
     print(f"\nПрофиль «{i['profile']}»: {i['users']} человек, {i['convs']} бесед, "
-          f"{i['messages']} сообщений (наполнение {i['seconds']} с)\n")
+          f"{i['messages']} сообщений (наполнение {i['seconds']} с)")
+    print(f"База: {'SQLCipher (как на бою)' if encrypted else 'обычный SQLite'}, "
+          f"mmap_size = {args.mmap} МБ\n")
     print(f"{'путь':<32}{'медиана, мс':>14}{'худшие 5%, мс':>16}{'запросов к БД':>16}")
     print("-" * 78)
     for r in out["results"]:
