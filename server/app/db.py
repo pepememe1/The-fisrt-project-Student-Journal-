@@ -544,7 +544,7 @@ def _ensure_subject_hours_teacher_column():
 
 
 def _ensure_subject_hours_zet_column():
-    """Идемпотентная мини-миграция: subject_hours.zet (ЗЕТ, docs/PLAN-ZET.md). NULLABLE
+    """Идемпотентная мини-миграция: subject_hours.zet (ЗЕТ, docs/done/PLAN-ZET.md). NULLABLE
     без дефолта — NULL значит «администратор не задавал», отличать от 0.0 обязательно."""
     from sqlalchemy import inspect, text
     insp = inspect(engine)

@@ -71,7 +71,7 @@ def test_ensure_subject_hours_teacher_column_adds_to_old_schema(client):
 
 
 def test_ensure_subject_hours_zet_column_adds_to_old_schema(client):
-    """Таблица без zet (схема ДО ЗЕТ, docs/PLAN-ZET.md) — миграция должна дописать
+    """Таблица без zet (схема ДО ЗЕТ, docs/done/PLAN-ZET.md) — миграция должна дописать
     колонку ALTER-ом, как и teacher_id выше."""
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE subject_hours"))

@@ -121,7 +121,7 @@ async def _security_headers(request: Request, call_next):
 async def _canary(request: Request, call_next):
     """Приманки: пути, к которым никогда не обращается никто законный.
 
-    Разбор и требования — `docs/PLAN-HONEYPOT.md`, список путей — `app/canary.py`.
+    Разбор и требования — `docs/done/PLAN-HONEYPOT.md`, список путей — `app/canary.py`.
 
     ⚠️ Именно MIDDLEWARE, а не маршруты. Маршруты пришлось бы согласовывать с
     `_is_api_path` и SPA-фолбэком (`/.env` иначе уехал бы в отдачу страницы), а проверка
@@ -260,7 +260,7 @@ app.include_router(messenger.router)       # мессенджер (/web/messenge
 # Активности в беседах (/web/messenger/activities/*). ⚠️ ПОСЛЕ messenger.router: у того
 # есть `/chats/{conv_id}`-подобные маршруты, но ни одного, который перехватил бы наш
 # префикс, — а вот наоборот порядок важен для будущих правок. Отдельный роутер, а не
-# часть messenger.py: тот уже 3300 строк (см. docs/PLAN-ACTIVITIES.md §4).
+# часть messenger.py: тот уже 3300 строк (см. docs/done/PLAN-ACTIVITIES.md §4).
 app.include_router(activities_router.router)
 app.include_router(messenger.mod_router)   # модерация мессенджера (/web/admin/messenger/*)
 #Расписание БЕЗ входа (/public/schedule/*) — для виджета на рабочем столе Android:

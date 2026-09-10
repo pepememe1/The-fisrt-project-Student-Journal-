@@ -236,7 +236,7 @@ async function saveHours() {
       //куратор уже поставил галочку на предмете (иначе сервер отклонит: 400).
       if (r.split) teachers2[r.subject] = r.teacher_id_2 || ''
       //ЗЕТ: пусто/не число — снять (null), НЕ подставлять zet_hint автоматически
-      //(docs/PLAN-ZET.md §10 — подсказка, а не источник правды).
+      //(docs/done/PLAN-ZET.md §10 — подсказка, а не источник правды).
       const zv = r.zet
       zet[r.subject] = (zv === '' || zv === null || zv === undefined || Number.isNaN(Number(zv)))
         ? null : Number(zv)
@@ -573,7 +573,7 @@ async function importParsed() {
               <input v-model.number="r.hours_total" type="number" min="0" step="2"
                      class="h-9 w-24 shrink-0 rounded-sm border border-border2 bg-card2 px-2 text-right text-sm text-text outline-none focus:border-accent" />
             </div>
-            <!-- ЗЕТ (docs/PLAN-ZET.md): подсказка zet_hint — СЕРАЯ, только placeholder,
+            <!-- ЗЕТ (docs/done/PLAN-ZET.md): подсказка zet_hint — СЕРАЯ, только placeholder,
                  автоматом никогда не сохраняется, пока администратор явно не впишет число. -->
             <div class="mt-1.5 flex items-center gap-2">
               <span class="shrink-0 text-xs text-text3">{{ locale.t('adminGroups.zetLabel', 'ЗЕТ') }}</span>

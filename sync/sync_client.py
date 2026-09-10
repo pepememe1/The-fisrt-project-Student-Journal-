@@ -486,7 +486,7 @@ class SyncClient:
                         zet: dict | None = None) -> dict:
         """Сохранить часы + назначение препода + ЗЕТ пачкой: {предмет: часов},
         {предмет: teacher_id|''} (§ролей препод↔предмет↔группа), {предмет: float|None}
-        (docs/PLAN-ZET.md). {ok, saved, term}."""
+        (docs/done/PLAN-ZET.md). {ok, saved, term}."""
         r = self._req("POST", "/web/admin/group-hours",
                       json={"group": group, "hours": hours, "teachers": teachers or {},
                             "zet": zet or {}},

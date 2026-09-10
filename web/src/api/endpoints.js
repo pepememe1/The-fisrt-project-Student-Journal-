@@ -120,7 +120,7 @@ export const studentApi = {
   journal: () => api.get('/web/student/journal'),
   stats: () => api.get('/web/student/stats'),
   insights: () => api.get('/web/student/insights'),
-  // ЗЕТ (docs/PLAN-ZET.md) — пусто (subjects: []), пока администратор не задал ни одного.
+  // ЗЕТ (docs/done/PLAN-ZET.md) — пусто (subjects: []), пока администратор не задал ни одного.
   zet: (params = {}) => api.get('/web/student/zet', { params }),
 }
 
@@ -179,7 +179,7 @@ export const curatorApi = {
     api.get('/web/curator/report', {
       params: { groups, fmt, ...params }, responseType: 'blob',
     }),
-  // Таблица перевода на курс по ЗЕТ (docs/PLAN-ZET.md §7.4) — «главная фича» отчёта.
+  // Таблица перевода на курс по ЗЕТ (docs/done/PLAN-ZET.md §7.4) — «главная фича» отчёта.
   zetReport: (group, params = {}) =>
     api.get('/web/curator/zet-report', { params: { group, ...params } }),
   // Риск отчисления по ВСЕЙ группе (3.6, dropout_risk.py). Сервер отдаёт только тех, у
@@ -278,7 +278,7 @@ export const adminApi = {
   // teachers — §ролей: {предмет: teacher_id | ''} — назначение препода на (группа,предмет);
   // teachers2 — второй преподаватель раздельного обучения (§ролей, 3.6.1; принимается,
   // только если куратор уже поставил split на предмете, см. curatorApi.setSubjectSplit);
-  // zet — docs/PLAN-ZET.md: {предмет: float | null}. Та же строка subject_hours, что и часы
+  // zet — docs/done/PLAN-ZET.md: {предмет: float | null}. Та же строка subject_hours, что и часы
   // (см. server/app/routers/web/admin_read.py::admin_set_group_hours).
   saveGroupHours: (group, hours, teachers = {}, teachers2 = {}, zet = {}) =>
     api.post('/web/admin/group-hours', { group, hours, teachers, teachers2, zet }),
@@ -362,7 +362,7 @@ export const adminApi = {
   serverMetrics: () => api.get('/web/admin/server/metrics'),
   serverBackups: () => api.get('/web/admin/server/backups'),
   serverTree: (path = '') => api.get('/web/admin/server/tree', { params: { path } }),
-  // Порог ЗЕТ для перевода группы на курс (docs/PLAN-ZET.md §7.2). min_zet: null — снять.
+  // Порог ЗЕТ для перевода группы на курс (docs/done/PLAN-ZET.md §7.2). min_zet: null — снять.
   zetThreshold: (group, params = {}) =>
     api.get('/web/admin/zet-thresholds', { params: { group, ...params } }),
   setZetThreshold: (payload) => api.post('/web/admin/zet-thresholds', payload),
@@ -445,7 +445,7 @@ export const parentApi = {
     api.get('/web/parent/journal', { params: { student_id: studentId, year, semester } }),
   vectorAsk: (message, studentId = '') =>
     api.post('/web/parent/vector/ask', { message, student_id: studentId }),
-  // ЗЕТ ребёнка (docs/PLAN-ZET.md §7.6) — та же строка, что у студента, без таблицы
+  // ЗЕТ ребёнка (docs/done/PLAN-ZET.md §7.6) — та же строка, что у студента, без таблицы
   // группы и порога перевода (это дело куратора/администрации).
   zet: (studentId = '', year = '', semester = 0) =>
     api.get('/web/parent/zet', { params: { student_id: studentId, year, semester } }),
@@ -493,7 +493,7 @@ export const vectorApi = {
   stt: (form) => api.post('/web/vector/stt', form),
 }
 
-// МЕССЕНДЖЕР (см. docs/MESSENGER-PLAN.md) ─────────────────────────────────────────
+// МЕССЕНДЖЕР (см. docs/done/MESSENGER-PLAN.md) ─────────────────────────────────────────
 // Отдельная онлайн-подсистема (НЕ через /sync). Фаза 1/2: личные чаты + каталог людей.
 export const messengerApi = {
   // Перевод сообщений. ⚠️ Переводит ЛОКАЛЬНЫЙ Argos на самом сервере, а НЕ ИИ-модель
@@ -596,7 +596,7 @@ export const messengerApi = {
   // ── Вложения и вкладки панели беседы (25.08.2026) ──────────────────────────
   // ⚠️ Файл НЕ проходит через наш сервер: `signUpload` отдаёт подписанную ссылку,
   // браузер кладёт файл ПРЯМО в хранилище, потом `confirmUpload`. Разбор, почему иначе
-  // нельзя, — docs/MESSENGER-ATTACHMENTS-PLAN.md и server/app/storage.py.
+  // нельзя, — docs/done/MESSENGER-ATTACHMENTS-PLAN.md и server/app/storage.py.
   uploadLimits: () => api.get('/web/messenger/uploads/limits'),
   signUpload: (convId, { name, size, mime }) =>
     api.post('/web/messenger/uploads/sign', { conversation_id: convId, name, size, mime }),
@@ -711,7 +711,7 @@ export const messengerApi = {
 }
 
 // МОДЕРАЦИЯ МЕССЕНДЖЕРА (только админ) ─────────────────────────────────────────────
-// Активности в беседах (docs/PLAN-ACTIVITIES.md). Префикс `/web/messenger/...` выбран не
+// Активности в беседах (docs/done/PLAN-ACTIVITIES.md). Префикс `/web/messenger/...` выбран не
 // случайно: он уже в `_PROXY_PREFIXES` десктопа, поэтому внутри программы всё работает
 // без единой правки локального сервера.
 export const activitiesApi = {

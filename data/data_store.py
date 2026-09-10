@@ -690,7 +690,7 @@ class LocalStore:
         return row[0] if row else ""
 
     def get_group_zet(self, group: str, year: str = "", semester=None) -> dict:
-        """{предмет: ЗЕТ} для группы за термин (docs/PLAN-ZET.md) — только предметы, где
+        """{предмет: ЗЕТ} для группы за термин (docs/done/PLAN-ZET.md) — только предметы, где
         администратор явно задал значение (NULL пропускается). Порог перевода
         (ZetThreshold) сюда НЕ приезжает синком — серверная политика, не офлайн-данные,
         см. server/app/models.py::ZetThreshold."""

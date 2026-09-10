@@ -28,7 +28,7 @@ const subject = ref('')
 const data = ref(null)
 const loading = ref(false)
 
-// ── ЗЕТ / перевод на курс (docs/PLAN-ZET.md §7.4 — «главная фича» отчёта куратора) ──
+// ── ЗЕТ / перевод на курс (docs/done/PLAN-ZET.md §7.4 — «главная фича» отчёта куратора) ──
 const viewMode = ref('journal')   // 'journal' | 'zet' | 'risk'
 // Риск отчисления по группе (3.6). Грузится ОДИН раз на смену группы, а не по открытию
 // вкладки: счётчик на самой вкладке обязан быть верным до того, как на неё нажали, —
@@ -294,7 +294,7 @@ async function exportReport(fmt) {
 
       <InviteDialog v-if="showInvite" :group="group" @close="showInvite = false" />
 
-      <!-- Журнал (read-only) / ЗЕТ·Перевод (docs/PLAN-ZET.md §7.4) -->
+      <!-- Журнал (read-only) / ЗЕТ·Перевод (docs/done/PLAN-ZET.md §7.4) -->
       <div class="flex gap-1 border-b border-border">
         <button type="button" @click="viewMode = 'journal'"
                 class="border-b-2 px-3 py-2 text-sm font-medium"
@@ -431,7 +431,7 @@ async function exportReport(fmt) {
         </div>
       </template>
 
-      <!-- ЗЕТ · Перевод на курс (docs/PLAN-ZET.md §7.4 — «главная фича») -->
+      <!-- ЗЕТ · Перевод на курс (docs/done/PLAN-ZET.md §7.4 — «главная фича») -->
       <template v-else>
         <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3 shadow-card">
           <span class="text-sm text-text2">{{ locale.t('curatorView.thresholdLabel', 'Порог перевода (ЗЕТ):') }}</span>

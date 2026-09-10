@@ -232,6 +232,9 @@ def check_and_fetch(base_url: str, current_version: str) -> dict:
 
     patch = DU.pick_patch(man, current_version)
     ok = False
+    #Откуда в итоге взялся файл — от этого зависит, ЧЬЮ подпись проверять ниже.
+    #Одного флага `ok` мало: он остаётся True и после отката на полную закачку.
+    ok_from_patch = False
     if patch:
         tmp_patch = os.path.join(tempfile.gettempdir(), patch["file"])
         if _download(f"{base}/downloads/{DU.UPDATES_DIR_NAME}/{patch['file']}",
@@ -243,6 +246,7 @@ def check_and_fetch(base_url: str, current_version: str) -> dict:
                 _LOG.warning("[update] результат патча не совпал с ожидаемым — качаю целиком")
                 os.remove(new_exe)
                 ok = False
+            ok_from_patch = ok
             try:
                 os.remove(tmp_patch)
             except OSError:
@@ -257,7 +261,25 @@ def check_and_fetch(base_url: str, current_version: str) -> dict:
     if not ok:
         return {}
 
-    info = {"version": latest, "path": new_exe, "sha256": DU.sha256_file(new_exe)}
+    #🔒 ПОДПИСЬ ВЫПУСКА. Хеш к этому моменту уже сошёлся, но он ехал ТЕМ ЖЕ каналом,
+    #что и файл: подменивший .exe перепишет и хеш в манифесте. Подпись сделана нашим
+    #закрытым ключом, которого у подменившего нет.
+    #⚠️ Берём её из ТОЙ ЖЕ записи манифеста, по которой качали: у полной закачки и у
+    #патча подписи разные, а перепутать их — значит проверить не то.
+    got_sha = DU.sha256_file(new_exe)
+    sig = ((patch or {}).get("sig") if patch and ok_from_patch
+           else (man.get("full") or {}).get("sig")) or ""
+    if not DU.release_signature_ok(latest, got_sha, sig):
+        #Отказ ГРОМКИЙ и файл убираем: оставленный на диске неподписанный .exe дождался
+        #бы следующего запуска и был бы поставлен уже без проверки.
+        _LOG.warning("[update] подпись выпуска не сошлась — обновление ОТКЛОНЕНО")
+        try:
+            os.remove(new_exe)
+        except OSError:
+            pass
+        return {}
+
+    info = {"version": latest, "path": new_exe, "sha256": got_sha, "sig": sig}
     _write_pending(info)
     _LOG.info(f"[update] обновление {latest} готово, установится при следующем запуске")
     return info
@@ -318,6 +340,16 @@ def apply_pending(current_version: str) -> bool:
     #ПЕРЕД подменой: это последняя точка, где отказ ничего не стоит.
     if info.get("sha256") and DU.sha256_file(new_exe) != info["sha256"]:
         _LOG.warning("[update] скачанный файл повреждён — обновление отменено")
+        clear_pending()
+        return False
+    #🔒 Подпись проверяется ВТОРОЙ раз, ровно как хеш, и по той же причине: между
+    #скачиванием и запуском проходит время, а файл всё это время лежит на диске рядом
+    #с программой. Первая проверка защищает канал, эта — уже лежащий файл.
+    #⚠️ Проверка идёт ЗДЕСЬ, а не только при скачивании: метку `pending` мог оставить
+    #и прежний выпуск программы, который подписи ещё не знал.
+    if not DU.release_signature_ok(info.get("version") or "", info.get("sha256") or "",
+                                   info.get("sig") or ""):
+        _LOG.warning("[update] подпись выпуска не сошлась — установка отменена")
         clear_pending()
         return False
 

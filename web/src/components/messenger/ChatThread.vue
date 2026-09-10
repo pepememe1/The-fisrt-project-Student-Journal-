@@ -405,7 +405,7 @@ function renderBody(msg) {
   })
 }
 
-// Фаза 1 ссылок/видео (docs/MESSENGER-ATTACHMENTS-PLAN.md): клик по обычной ссылке в теле
+// Фаза 1 ссылок/видео (docs/done/MESSENGER-ATTACHMENTS-PLAN.md): клик по обычной ссылке в теле
 // сообщения (data-external-link, см. markdownLite.js) — подтверждение «Переадресация»
 // перед уходом с сайта, как договорились (видео из белого списка сюда не попадают —
 // они рендерятся ОТДЕЛЬНОЙ карточкой ниже, см. videoEmbeds()).

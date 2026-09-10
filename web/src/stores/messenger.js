@@ -1,7 +1,7 @@
 /**
  * messenger.js — состояние мессенджера (Фаза 2: личные чаты).
  *
- * Отдельная онлайн-подсистема (см. docs/MESSENGER-PLAN.md): истина на сервере, здесь —
+ * Отдельная онлайн-подсистема (см. docs/done/MESSENGER-PLAN.md): истина на сервере, здесь —
  * кэш активной переписки + список чатов + каталог людей. Транспорт Фазы 2 — ОПРОС
  * (poll ?after=<id> раз в несколько секунд); WebSocket добавим отдельной фазой, интерфейс
  * стора менять не придётся. `mine` (своё ли сообщение) считает сервер — клиент своего id
@@ -627,7 +627,7 @@ export const useMessengerStore = defineStore('messenger', () => {
           } else if (_hidden()) missedChats = true
           else loadChats()
         } else if (ev.type && ev.type.startsWith('activity.')) {
-          // Активности (docs/PLAN-ACTIVITIES.md §7) — своего канала у них нет, кадры
+          // Активности (docs/done/PLAN-ACTIVITIES.md §7) — своего канала у них нет, кадры
           // идут этим же сокетом. Разбор — в сторе активности: тут только маршрутизация.
           const act = useActivityStore()
           if (ev.type === 'activity.started') act.onStarted(ev, activeId.value)

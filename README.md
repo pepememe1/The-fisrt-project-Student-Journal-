@@ -426,7 +426,7 @@ cd web && npm run build               # → web/dist
 
 `requirements.txt` и `server/requirements.txt` продолжают работать (боевой VPS
 разворачивается ими) — они производные от `pyproject.toml`. Порядок полного перехода —
-[`docs/PLAN-PACKAGING.md`](docs/PLAN-PACKAGING.md).
+[`docs/done/PLAN-PACKAGING.md`](docs/done/PLAN-PACKAGING.md).
 
 ## Тесты
 
@@ -556,10 +556,10 @@ cd web/android && ./gradlew :app:testDebugUnitTest   # Android, устройст
 
 | Путь | Что внутри |
 |---|---|
-| `docs/PLAN-PACKAGING.md` | **Уход от плоских импортов, `uv`, и куда двигаться вебу и десктопу** (3.6) |
-| `docs/PLAN-ZET.md`, `docs/PLAN-3.1.md`, `docs/PLAN-2.10.md` | Планы реализованных релизов |
+| `docs/done/PLAN-PACKAGING.md` | **Уход от плоских импортов, `uv`, и куда двигаться вебу и десктопу** (3.6) |
+| `docs/done/PLAN-ZET.md`, `docs/done/PLAN-3.1.md`, `docs/done/PLAN-2.10.md` | Планы реализованных релизов |
 | `docs/MESSENGER-*.md` | Планы мессенджера и его надстроек |
-| `docs/TTS-PLAN.md`, `docs/PLAN-MOBILE-OFFLINE.md`, `docs/TECH-DEBT-PLAN.md` | Озвучка, офлайн на мобилке, техдолг |
+| `docs/done/TTS-PLAN.md`, `docs/PLAN-MOBILE-OFFLINE.md`, `docs/TECH-DEBT-PLAN.md` | Озвучка, офлайн на мобилке, техдолг |
 | `docs/contracts/` | Контрактные наборы данных, по которым сверяются Python, JS и Java-код виджета (оценки, эмоции маскота, чётность недели) |
 
 ## Архитектурные правила, которые нельзя нарушать

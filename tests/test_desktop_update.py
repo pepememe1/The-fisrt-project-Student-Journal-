@@ -417,3 +417,132 @@ def test_prompt_over_https_still_offers_update(updater_env, monkeypatch):
     monkeypatch.setattr(updater, "ask_yes_no", lambda *a: asked.append(a) or False)
     assert updater.check_and_prompt("https://esstu-gradebook.ru", "3.6.9") is True
     assert asked, "по https обновление обязано предлагаться как раньше"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# ПОДПИСЬ ВЫПУСКА (Ed25519), 10.09.2026
+#
+# Закрывает пункт, честно висевший в README: контрольная сумма едет ТЕМ ЖЕ каналом, что
+# и файл, — она ловит битую закачку и не ловит подмену.
+# ─────────────────────────────────────────────────────────────────────────────────
+
+def _keypair():
+    """Пара ключей для опыта. Пропускаем, только если пакета нет ВООБЩЕ."""
+    ed = pytest.importorskip(
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+        reason="cryptography объявлен обязательной зависимостью (§6); "
+               "без него проверять подпись нечем")
+    from cryptography.hazmat.primitives import serialization
+
+    priv = ed.Ed25519PrivateKey.generate()
+    pub = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw).hex()
+    return priv, pub
+
+
+def _sign(priv, version, sha):
+    return priv.sign(DU.signing_payload(version, sha)).hex()
+
+
+def test_a_properly_signed_release_is_accepted(monkeypatch):
+    priv, pub = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (pub,))
+    sha = "a" * 64
+    assert DU.release_signature_ok("3.9.4", sha, _sign(priv, "3.9.4", sha))
+
+
+def test_a_substituted_file_fails_even_with_a_real_signature(monkeypatch):
+    """Главный случай, ради которого всё затевалось.
+
+    Подменивший .exe перепишет и хеш в манифесте — и старая проверка сверила бы подделку
+    саму с собой. Подпись относится к КОНКРЕТНОМУ хешу, поэтому чужой файл её не проходит.
+    """
+    priv, pub = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (pub,))
+    good = _sign(priv, "3.9.4", "a" * 64)
+    assert not DU.release_signature_ok("3.9.4", "b" * 64, good), (
+        "подпись от одного файла подошла к другому — она не привязана к хешу")
+
+
+def test_signature_of_an_older_release_does_not_unlock_a_newer_manifest(monkeypatch):
+    """🔥 ОТКАТ НА СТАРУЮ ВЕРСИЮ — отдельная атака, и версия входит в подпись ради неё.
+
+    Без версии в подписываемом наша ЖЕ настоящая подпись от выпуска 3.8.0 годилась бы
+    для манифеста, объявляющего 3.9.4: получивший канал откатил бы парк на прежнюю,
+    уязвимую сборку, и каждая проверка при этом сошлась бы.
+    """
+    priv, pub = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (pub,))
+    sha = "c" * 64
+    old_sig = _sign(priv, "3.8.0", sha)
+    assert DU.release_signature_ok("3.8.0", sha, old_sig)          #для своей — годна
+    assert not DU.release_signature_ok("3.9.4", sha, old_sig), (
+        "подпись прежнего выпуска подошла к новому — откат проходит с настоящей подписью")
+
+
+def test_a_foreign_key_is_rejected(monkeypatch):
+    """Подпись, сделанная не нашим ключом, не проходит."""
+    priv_theirs, _ = _keypair()
+    _, pub_ours = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (pub_ours,))
+    sha = "d" * 64
+    assert not DU.release_signature_ok("3.9.4", sha, _sign(priv_theirs, "3.9.4", sha))
+
+
+def test_key_rotation_keeps_both_keys_working(monkeypatch):
+    """Смена ключа не имеет права разорвать обновления.
+
+    С единственным ключом смена означала бы, что все, кто ещё не обновился, теряют
+    обновления НАВСЕГДА — чинить пришлось бы руками у каждого. Поэтому ключей список.
+    """
+    old_priv, old_pub = _keypair()
+    new_priv, new_pub = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (new_pub, old_pub))
+    sha = "e" * 64
+    assert DU.release_signature_ok("3.9.4", sha, _sign(new_priv, "3.9.4", sha))
+    assert DU.release_signature_ok("3.9.4", sha, _sign(old_priv, "3.9.4", sha))
+
+
+def test_garbage_in_the_signature_field_is_rejected(monkeypatch):
+    """Мусор вместо подписи — отказ, а не исключение на чужом компьютере."""
+    _, pub = _keypair()
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", (pub,))
+    for junk in ("", "нет", "zz" * 64, "ab", None, "0" * 127):
+        assert not DU.release_signature_ok("3.9.4", "f" * 64, junk), junk
+
+
+def test_while_no_key_is_configured_behaviour_is_exactly_as_before(monkeypatch):
+    """🔴 НАЗВАННАЯ ГРАНИЦА, а не забытый случай.
+
+    Пока открытый ключ не заведён, продукт НЕ ЗАЩИЩЁН от подмены обновления — и этот
+    тест существует, чтобы факт нельзя было потерять из виду. Строгая проверка при
+    пустом списке означала бы, что первая же собранная сборка перестала обновляться у
+    всех разом; вписать ключ может только тот, у кого есть закрытая половина.
+    """
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", ())
+    assert not DU.signature_required()
+    assert DU.release_signature_ok("3.9.4", "a" * 64, "")          #ставим как раньше
+    #Но САМА проверка при этом честно отвечает «не проверено», а не «проверено и ок»:
+    #иначе пустой список выглядел бы как успешная проверка.
+    assert not DU.verify_release_signature("3.9.4", "a" * 64, "0" * 128)
+
+
+def test_the_payload_is_computed_in_one_place():
+    """🔒 Подписывающий и проверяющий обязаны считать байты ОДНОЙ функцией.
+
+    Две копии формата разойдутся молча, и выглядеть это будет как «подпись не сходится»,
+    то есть как попытка подмены, а не как наша опечатка. Проверяем, что инструмент
+    подписи не завёл свою версию.
+    """
+    import inspect
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "tools" / "sign_release.py"
+    text = src.read_text(encoding="utf-8")
+    assert "DU.signing_payload(" in text, (
+        "tools/sign_release.py считает подписываемые байты сам — заведётся вторая копия "
+        "формата, и она разойдётся с проверкой")
+    assert "_SIG_DOMAIN" not in text, (
+        "приставка области продублирована в инструменте вместо использования общей")
+    assert inspect.isfunction(DU.signing_payload)

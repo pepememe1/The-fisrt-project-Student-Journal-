@@ -1,4 +1,4 @@
-// markdownLite.links.test.mjs — ссылки (Фаза 1, docs/MESSENGER-ATTACHMENTS-PLAN.md).
+// markdownLite.links.test.mjs — ссылки (Фаза 1, docs/done/MESSENGER-ATTACHMENTS-PLAN.md).
 //
 // Не парный Python-контракт (сервер markdown не рендерит) — обычный юнит-тест на
 // автолинковку и XSS-безопасность результата.

@@ -158,7 +158,7 @@ def curator_group_subject(group: str = Query(...), subject: str = Query(...),
 @router.get("/curator/zet-report")
 def curator_zet_report(group: str = Query(...), year: str = Query(""), semester: int = Query(0),
                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Таблица перевода на курс по ЗЕТ (docs/PLAN-ZET.md §7.4) — «главная фича» отчёта
+    """Таблица перевода на курс по ЗЕТ (docs/done/PLAN-ZET.md §7.4) — «главная фича» отчёта
     куратора. group — QUERY (не path): имена групп содержат слэш («К75/1»), см. урок
     у /curator/subjects. Порог — ZetThreshold этой группы/термина, если куратор/админ
     его ещё не задал — eligible получают все (см. study_hours.group_zet_report)."""
@@ -176,7 +176,7 @@ def curator_zet_report(group: str = Query(...), year: str = Query(""), semester:
 def admin_get_zet_threshold(group: str = Query(...), year: str = Query(""),
                             semester: int = Query(0),
                             user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Порог перевода группы на курс (docs/PLAN-ZET.md §7.2). group — QUERY (слэш в имени
+    """Порог перевода группы на курс (docs/done/PLAN-ZET.md §7.2). group — QUERY (слэш в имени
     группы, тот же урок, что и везде)."""
     _admin_or_curator_check(user, group)
     cfg = W.load_config(db)
@@ -225,7 +225,7 @@ def admin_set_zet_threshold(payload: dict = Body(...),
 @router.post("/admin/groups/promote")
 def admin_promote_group(payload: dict = Body(...), request: Request = None,
                         user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Перевод на следующий курс (docs/PLAN-ZET.md §7.4) — только явной кнопкой, только
+    """Перевод на следующий курс (docs/done/PLAN-ZET.md §7.4) — только явной кнопкой, только
     студентов с eligible=true (сервер САМ перепроверяет, клиентскому флагу не доверяет).
     group/year/semester/student_ids — В ТЕЛЕ (не в пути — слэш в имени группы)."""
     group = (payload.get("group") or "").strip()

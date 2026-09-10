@@ -853,7 +853,7 @@ def group_risk_report(db, group: str, cfg=None, subjects=None) -> list:
 
 
 def zet_summary_for_student(db, surname: str, name: str, group: str, year: str, semester) -> dict:
-    """Сводка ЗЕТ студента за термин (docs/PLAN-ZET.md) — {earned,total,pct,subjects[]}.
+    """Сводка ЗЕТ студента за термин (docs/done/PLAN-ZET.md) — {earned,total,pct,subjects[]}.
     Собирает занятия/оценки/шкалы преподавателей и сводит через ЧИСТЫЕ функции
     study_hours (та же логика для студента/куратора/родителя, один расчёт)."""
     lessons = group_lessons(db, group, year=year, semester=semester)
@@ -862,7 +862,7 @@ def zet_summary_for_student(db, surname: str, name: str, group: str, year: str, 
     hrows = {r.subject: r for r in db.query(SubjectHours).filter(
         SubjectHours.group_name == group, SubjectHours.year == (year or ""),
         SubjectHours.semester == int(semester or 0), SubjectHours.deleted == False).all()}  # noqa: E712
-    #РУБЕЖ СЕМЕСТРА (вариант C, docs/PLAN-ZET.md §2). Термин закрыт целиком, если он НЕ
+    #РУБЕЖ СЕМЕСТРА (вариант C, docs/done/PLAN-ZET.md §2). Термин закрыт целиком, если он НЕ
     #текущий (смотрят архив прошлого семестра). Внутри текущего рубеж по предмету проходит,
     #когда пройдены его плановые часы (см. term_over на предмет ниже). Без этого предмет без
     #экзамена засчитывал бы все ЗЕТ по первой же положительной оценке (баг Влада).
@@ -894,7 +894,7 @@ def zet_summary_for_student(db, surname: str, name: str, group: str, year: str, 
 
 
 def group_zet_report(db, group: str, year: str, semester, min_zet) -> list:
-    """Отчёт группы для кнопки перевода на курс (docs/PLAN-ZET.md §7.4) — по каждому
+    """Отчёт группы для кнопки перевода на курс (docs/done/PLAN-ZET.md §7.4) — по каждому
     студенту сводит zet_summary_for_student, дальше решает study_hours.group_zet_report."""
     students = []
     for s in students_in_group(db, group):

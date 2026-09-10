@@ -171,7 +171,7 @@ def _render_silero(text: str, voice: str) -> bytes:
 
 
 #Реестр движков синтеза. Сейчас один — Silero (CPU-демо на VPS). На боевом GPU-сервере
-#сюда добавится КЛОН своего голоса (см. docs/TTS-PLAN.md) с той же сигнатурой
+#сюда добавится КЛОН своего голоса (см. docs/done/TTS-PLAN.md) с той же сигнатурой
 #(text, voice) -> wav-байты — synthesize/кэш/эндпоинт при этом менять не придётся.
 _RENDERERS = {"silero": _render_silero}
 _DEFAULT_ENGINE = "silero"

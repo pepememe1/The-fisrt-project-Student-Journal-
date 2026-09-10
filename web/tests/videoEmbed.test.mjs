@@ -1,5 +1,5 @@
 // videoEmbed.test.mjs — извлечение видео-эмбеда по белому списку (Фаза 1,
-// docs/MESSENGER-ATTACHMENTS-PLAN.md §2/§6/§9). Чистая функция, без сети — id ролика
+// docs/done/MESSENGER-ATTACHMENTS-PLAN.md §2/§6/§9). Чистая функция, без сети — id ролика
 // достаётся regex'ом из самой ссылки (сервер туда никогда не ходит).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

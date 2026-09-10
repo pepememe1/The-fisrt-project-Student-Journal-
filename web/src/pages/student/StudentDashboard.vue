@@ -19,7 +19,7 @@ const locale = useLocaleStore()
 const loading = ref(true)
 const data = ref(null)
 const insights = ref([])
-const zet = ref(null)   // docs/PLAN-ZET.md — null/subjects:[] → строка ЗЕТ не рендерится
+const zet = ref(null)   // docs/done/PLAN-ZET.md — null/subjects:[] → строка ЗЕТ не рендерится
 
 async function load() {
   loading.value = true
@@ -138,7 +138,7 @@ onBeforeUnmount(() => clearInterval(tipTimer))
           <StatCard :label="locale.t('studentDashboard.gradesLabel', 'Оценок')" :value="data?.grades_total ?? '—'" />
         </div>
 
-        <!-- ЗЕТ (docs/PLAN-ZET.md) — только если хотя бы один предмет его имеет. -->
+        <!-- ЗЕТ (docs/done/PLAN-ZET.md) — только если хотя бы один предмет его имеет. -->
         <div v-if="zet?.subjects?.length" class="rounded-lg border border-border bg-card p-4 shadow-card">
           <!-- min-zet передаётся ОБЯЗАТЕЛЬНО: без него полоса всегда красится «хорошо»
                (см. ZetProgress: «без порога — всегда accent»), и студент видит свой

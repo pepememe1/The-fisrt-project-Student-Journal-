@@ -23,7 +23,7 @@ const studentId = ref('')
 const data = ref(null)
 const loading = ref(true)
 const denied = ref(false)
-const zet = ref(null)   // docs/PLAN-ZET.md §7.6 — та же строка, что у студента, без порога
+const zet = ref(null)   // docs/done/PLAN-ZET.md §7.6 — та же строка, что у студента, без порога
 
 // Оценки рисует общий SubjectLessons — тот же, что в журнале студента: докстринг
 // /web/parent/journal обещает «формат один в один», и собственная копия вёрстки здесь

@@ -301,7 +301,7 @@ def student_insights(user: User = Depends(get_current_user), db: Session = Depen
 @router.get("/student/zet")
 def student_zet(year: str = Query(""), semester: int = Query(0),
                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """ЗЕТ студента за термин (docs/PLAN-ZET.md). Пусто — ни один предмет группы ещё
+    """ЗЕТ студента за термин (docs/done/PLAN-ZET.md). Пусто — ни один предмет группы ещё
     не получил ЗЕТ от администратора (интерфейс тогда не показывает строку вовсе).
     min_zet — порог перевода группы (для «до перевода: X ЗЕТ» в дашборде), null — куратор/
     админ его ещё не задавал."""

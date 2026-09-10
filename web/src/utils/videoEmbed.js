@@ -1,6 +1,6 @@
 /**
  * videoEmbed.js — извлечение видео-эмбеда из ссылки мессенджера (Фаза 1,
- * docs/MESSENGER-ATTACHMENTS-PLAN.md §2/§6/§9).
+ * docs/done/MESSENGER-ATTACHMENTS-PLAN.md §2/§6/§9).
  *
  * БЕЛЫЙ СПИСОК хостов (YouTube/VK Video/Rutube) — id ролика достаётся regex'ом из самой
  * ссылки, сервер НИКУДА не ходит за превью. Это закрывает SSRF архитектурно: серверу

@@ -173,7 +173,7 @@ def parent_journal(student_id: str = Query(""), year: str = Query(""), semester:
 @router.get("/parent/zet")
 def parent_zet(student_id: str = Query(""), year: str = Query(""), semester: int = Query(0),
               user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """ЗЕТ ребёнка — та же строка, что у студента (docs/PLAN-ZET.md §7.6), без таблицы
+    """ЗЕТ ребёнка — та же строка, что у студента (docs/done/PLAN-ZET.md §7.6), без таблицы
     группы и порога перевода (это дело куратора/администрации, не родителя)."""
     _require_parent(user)
     child = _resolve_child(db, user, student_id)

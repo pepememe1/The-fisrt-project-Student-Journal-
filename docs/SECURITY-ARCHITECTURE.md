@@ -62,7 +62,7 @@
 `server/app/main.py`. Причина не в перестраховке: **тот же `server/app` поднимается в
 десктопной сборке на 127.0.0.1 БЕЗ Caddy** (`desktop/local_api.py`) — там их не поставит
 никто. Используется `setdefault`, чтобы не перетереть осознанный заголовок эндпоинта.
-Найдено пентестом 3.8 (`docs/PENTEST-3.7.8.md`), держит `test_security_headers.py`.
+Найдено пентестом 3.8 (`docs/done/PENTEST-3.7.8.md`), держит `test_security_headers.py`.
 
 ### 1.3 Пароли
 

@@ -192,7 +192,7 @@ def assess(average: float = 0.0,
             + ("…" if len(silent_subjects) > 4 else "") + ".",
             "По этим предметам вы не аттестованы — узнайте, что нужно сдать.")
 
-    # 8. НЕДОБОР ЗЕТ к порогу перевода на следующий курс (docs/PLAN-ZET.md). Порог
+    # 8. НЕДОБОР ЗЕТ к порогу перевода на следующий курс (docs/done/PLAN-ZET.md). Порог
     #    задаёт куратор/админ; не задан — фактор не считается (не выдумываем норму).
     if zet_min and zet_earned is not None and zet_earned < zet_min:
         shortfall = zet_min - zet_earned

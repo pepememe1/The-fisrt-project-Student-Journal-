@@ -3,7 +3,7 @@
 //   • «Жалобы» — очередь тикетов (report на конкретное сообщение) со снимком текста + обработка;
 //   • «Обращения» — чаты поддержки (кнопка ⚙ «Написать модерации» у пользователя): входящие
 //     сообщения + ответ от лица модерации. Каждый просмотр/ответ пишется в аудит на сервере.
-// См. docs/MESSENGER-PLAN.md §6, §10.
+// См. docs/done/MESSENGER-PLAN.md §6, §10.
 import { ref, computed, onMounted } from 'vue'
 import { messengerModApi } from '@/api/endpoints'
 import Avatar from '@/components/ui/Avatar.vue'

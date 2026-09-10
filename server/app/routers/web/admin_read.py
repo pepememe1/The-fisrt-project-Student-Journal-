@@ -137,7 +137,7 @@ def admin_group_hours(group: str = Query(...), year: str = Query(""), semester: 
         out.append({"subject": subj, "hours_total": hrs,
                     "hours_done": W.hours_done(by_subject.get(subj, [])),
                     "teacher_id": tid, "teacher_name": tnames.get(tid, ""),
-                    #ЗЕТ (docs/PLAN-ZET.md): zet — уже подтверждённое администратором
+                    #ЗЕТ (docs/done/PLAN-ZET.md): zet — уже подтверждённое администратором
                     #значение (None — не задано, тогда интерфейс строку не показывает);
                     #zet_hint — ТОЛЬКО подсказка по формуле, никогда не подставляется сама.
                     "zet": zet, "zet_hint": W.study_hours.zet_hint(hrs),
@@ -256,7 +256,7 @@ def admin_set_group_hours(payload: dict = Body(...),
     если куратор уже поставил галочку «раздельное обучение» на этом предмете
     (SubjectHours.split — см. curator.py::curator_set_subject_split), иначе 400: часы
     редактор не место заводить раздельное обучение, только назначать в него людей.
-    `zet` — docs/PLAN-ZET.md: null (или ключ отсутствует) — не трогать/не задано, число —
+    `zet` — docs/done/PLAN-ZET.md: null (или ключ отсутствует) — не трогать/не задано, число —
     подтверждённое администратором значение (подсказка zet_hint сюда НЕ подставляется
     автоматически, только человеком)."""
     group = (payload.get("group") or "").strip()

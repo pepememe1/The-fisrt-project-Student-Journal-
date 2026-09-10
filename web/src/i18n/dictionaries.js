@@ -30,7 +30,7 @@ export const DEFAULT_LOCALE = 'ru'
 export const MESSAGES = {
   ru: {
     'adminMessenger.fromActivity': 'Отзыв на активности',
-    // Активности в беседах (docs/PLAN-ACTIVITIES.md)
+    // Активности в беседах (docs/done/PLAN-ACTIVITIES.md)
     'activity.mini.boardEmpty': 'Пока пусто',
     'activity.mini.left': 'осталось',
     'activity.mini.voted': 'проголосовали',
@@ -2322,7 +2322,7 @@ export const MESSAGES = {
 
   en: {
     'adminMessenger.fromActivity': 'Activity feedback',
-    // Активности в беседах (docs/PLAN-ACTIVITIES.md)
+    // Активности в беседах (docs/done/PLAN-ACTIVITIES.md)
     'activity.mini.boardEmpty': 'Empty so far',
     'activity.mini.left': 'left',
     'activity.mini.voted': 'voted',
@@ -4601,7 +4601,7 @@ export const MESSAGES = {
 
   zh: {
     'adminMessenger.fromActivity': '活动反馈',
-    // Активности в беседах (docs/PLAN-ACTIVITIES.md)
+    // Активности в беседах (docs/done/PLAN-ACTIVITIES.md)
     'activity.mini.boardEmpty': '暂时为空',
     'activity.mini.left': '剩余',
     'activity.mini.voted': '已投票',

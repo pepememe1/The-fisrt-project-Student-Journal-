@@ -586,7 +586,7 @@ def _grade_breakdown(lessons, records, scale=None) -> dict:
 
 
 def _zet_facts(db, surname: str, name: str, group: str, cfg: dict) -> dict:
-    """Вектор: «Сколько у меня ЗЕТ / хватит ли для перевода» (docs/PLAN-ZET.md §6).
+    """Вектор: «Сколько у меня ЗЕТ / хватит ли для перевода» (docs/done/PLAN-ZET.md §6).
     Факты — из того же расчёта, что и /web/student/zet; LLM (если подключена) только
     переформулирует, порог и цифры не выдумывает."""
     ty, ts = W.current_term(cfg)

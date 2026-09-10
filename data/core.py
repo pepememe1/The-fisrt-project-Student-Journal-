@@ -627,7 +627,7 @@ class DBManager:
             cur.execute("ALTER TABLE subject_hours ADD COLUMN teacher_id TEXT DEFAULT ''")
         except Exception as e:
             _alter_ignored("subject_hours", "teacher_id", e)
-        #zet — ЗЕТ предмета (docs/PLAN-ZET.md), NULL = администратор не задавал.
+        #zet — ЗЕТ предмета (docs/done/PLAN-ZET.md), NULL = администратор не задавал.
         try:
             cur.execute("ALTER TABLE subject_hours ADD COLUMN zet REAL")
         except Exception as e:

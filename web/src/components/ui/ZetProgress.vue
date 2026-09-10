@@ -1,14 +1,14 @@
 <script setup>
-// ZetProgress — переиспользуемый прогресс ЗЕТ (docs/PLAN-ZET.md §7.5): дашборд студента,
+// ZetProgress — переиспользуемый прогресс ЗЕТ (docs/done/PLAN-ZET.md §7.5): дашборд студента,
 // отчёт куратора, кабинет родителя. Пусто (total=0) — компонент НЕ рендерит себя вовсе,
 // вызывающая сторона должна сама не монтировать его, пока ни один предмет не имеет ЗЕТ
-// (см. docs/PLAN-ZET.md §10 — «не показывать строку ЗЕТ, если поле NULL»).
+// (см. docs/done/PLAN-ZET.md §10 — «не показывать строку ЗЕТ, если поле NULL»).
 import { useLocaleStore } from '@/stores/locale'
 const locale = useLocaleStore()
 defineProps({
   earned: { type: Number, required: true },
   total: { type: Number, required: true },
-  // «Ожидается» — ЗЕТ по предметам, семестр которых ещё идёт (вариант C, docs/PLAN-ZET.md §2):
+  // «Ожидается» — ЗЕТ по предметам, семестр которых ещё идёт (вариант C, docs/done/PLAN-ZET.md §2):
   // не засчитаны, но и не потеряны. Показываем серым отдельно от набранных.
   pending: { type: Number, default: 0 },
   minZet: { type: Number, default: null },
