@@ -29,6 +29,17 @@ REMOTE_DL="/root/gb-deploy/downloads"
 # путь открыть не может (см. build_nuitka.sh, тот же приём уже применён там).
 ROOT="$(cd "$(dirname "$0")/.." && pwd -W 2>/dev/null || pwd)"
 WORK="$(mktemp -d)"
+# ⚠️ ТА ЖЕ ГРАБЛЯ, ЧТО У ROOT ВЫШЕ, И ОНА СТОИЛА ОСТАНОВЛЕННОЙ ВЫКЛАДКИ (12.09.2026).
+# `mktemp -d` на Git Bash отдаёт MSYS-путь (/tmp/tmp.XXXX). Когда такой путь идёт
+# АРГУМЕНТОМ нативному Windows-python, MSYS конвертирует его сам и всё работает — именно
+# поэтому sign_release.py и make_desktop_patch.py отрабатывают. Но подставленный ВНУТРЬ
+# текста `python -c "..."` он остаётся MSYS-путём: конвертируются только аргументы, а не
+# содержимое строки. Ворота подписи падали FileNotFoundError на собственном манифесте,
+# то есть отказ был правильным по факту (заливки не случилось) и вводящим в заблуждение
+# по причине: выглядит как «подпись не сошлась», хотя подпись даже не проверялась.
+# Правило: путь, который уедет ВНУТРЬ кода для нативного интерпретатора, приводим к
+# Windows-форме заранее и пользуемся WORK_W, а не WORK.
+WORK_W="$(cd "$WORK" && pwd -W 2>/dev/null || printf '%s' "$WORK")"
 trap 'rm -rf "$WORK"' EXIT
 
 [ -f "$NEW_EXE" ] || { echo "нет файла сборки: $NEW_EXE"; exit 2; }
@@ -99,7 +110,7 @@ if [ -f "$KEY_PATH" ]; then
 import io, json, sys
 sys.path.insert(0, r'$ROOT')
 import desktop_update as DU
-m = json.load(io.open(r'$WORK/updates/manifest.json', encoding='utf-8'))
+m = json.load(io.open(r'$WORK_W/updates/manifest.json', encoding='utf-8'))
 full = m.get('full') or {}
 if not DU.release_signature_ok(m.get('version',''), full.get('sha256',''), full.get('sig','')):
     raise SystemExit('ВОРОТА: подпись манифеста НЕ сходится с UPDATE_PUBLIC_KEYS — '
