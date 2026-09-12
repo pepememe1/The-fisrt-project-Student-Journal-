@@ -92,7 +92,25 @@ def test_no_patch_when_already_latest():
 # ── Клиент: подмена .exe ──────────────────────────────────────────────────────────
 @pytest.fixture()
 def updater_env(tmp_path, monkeypatch):
-    """Изолированная «установка»: свой каталог программы и свои данные."""
+    """Изолированная «установка»: свой каталог программы, свои данные И СВОЙ набор ключей.
+
+    🔥 ПОСЛЕДНЕЕ — ПОЧИНКА НАСТОЯЩЕГО ДЕФЕКТА (12.09.2026, вскрылся при заведении ключа).
+    Тесты установки строят «скачанное обновление» БЕЗ подписи и проверяют механику подмены
+    .exe переименованием. Пока `UPDATE_PUBLIC_KEYS` был пуст, подпись не требовалась и всё
+    сходилось. В день, когда ключ завели, `apply_pending` начал честно отказываться ставить
+    неподписанное — и тест покраснел, **не имея к подписи никакого отношения**.
+
+    ⚠️ Опаснее самого красного то, от чего он зависел: **прогон наследовал состояние
+    МАШИНЫ**. У того, кто ключ не заводил, эти проверки зелёные; у того, кто завёл, —
+    красные, при одном и том же коде. Это четвёртый случай того же класса после
+    `config.IS_PROD` в CI, состояния переводчика и хеша редакции ASVS, и правило прежнее:
+    **тест обязан задавать окружение САМ**. Здесь окружение включает и набор ключей.
+
+    ⚠️ Пустой набор выбран НАМЕРЕННО: эти тесты про подмену файла, а не про подпись.
+    Проверки самой подписи ставят свой ключ явно (см. `_sign`/`monkeypatch` ниже) — то есть
+    оба режима покрыты, и ни один не зависит от того, что лежит в домашнем каталоге.
+    """
+    monkeypatch.setattr(DU, "UPDATE_PUBLIC_KEYS", ())
     monkeypatch.setenv("GRADEBOOK_APP_DIR", str(tmp_path))
     monkeypatch.setenv("GRADEBOOK_DATA_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(exist_ok=True)
@@ -592,6 +610,46 @@ def test_the_public_key_list_itself_is_sane():
             f"{k.strip()[:12]}…")
     assert len(keys) == len({k.strip().lower() for k in keys}), (
         "в UPDATE_PUBLIC_KEYS есть дубли — список правили вслепую")
+
+
+def test_the_key_in_code_matches_the_private_half_on_this_machine():
+    """🔑 ОТКРЫТЫЙ КЛЮЧ В КОДЕ ОБЯЗАН СООТВЕТСТВОВАТЬ ЗАКРЫТОЙ ПОЛОВИНЕ НА МАШИНЕ ВЫКЛАДКИ.
+
+    Опечатка при вставке (потерянный символ, перепутанный регистр, ключ от прошлой
+    ротации) не ломает ни сборку, ни выкладку: манифест подпишется закрытым ключом, а
+    проверка у человека пойдёт по ДРУГОМУ открытому — и обновления перестанут ставиться
+    у всех разом, молча, выглядя как «что-то с интернетом».
+
+    ⚠️ Пропуск — по отсутствию ПРЕДМЕТА, а не инструмента: в CI и на машине без права
+    выпускать релизы закрытого ключа нет и быть не должно, проверять там нечего. Это
+    ровно та граница, из-за которой `importorskip` однажды погасил 42 проверки: пропускать
+    можно то, чего нет по замыслу, а не то, что забыли поставить.
+    ⚠️ Закрытый ключ здесь НЕ печатается ни при каком исходе — в сообщении об ошибке
+    только открытые половины.
+    """
+    import io
+    import os
+
+    path = os.path.join(os.path.expanduser("~"), ".gradebook", "release_signing_key.hex")
+    if not os.path.exists(path):
+        pytest.skip("закрытого ключа на этой машине нет — проверять нечего (см. докстринг)")
+    if not DU.UPDATE_PUBLIC_KEYS:
+        pytest.skip("ключ в коде не заведён — соответствовать нечему")
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except Exception:                                               # noqa: BLE001
+        pytest.fail("cryptography объявлена зависимостью продукта, но не установлена")
+
+    raw = bytes.fromhex(io.open(path, encoding="utf-8").read().strip())
+    derived = Ed25519PrivateKey.from_private_bytes(raw).public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw).hex()
+    known = {k.strip().lower() for k in DU.UPDATE_PUBLIC_KEYS}
+    assert derived in known, (
+        "закрытый ключ на этой машине даёт открытый %s, а в UPDATE_PUBLIC_KEYS его нет "
+        "(там %s) — подписанные им выпуски не поставятся НИ У КОГО"
+        % (derived[:12] + "…", ", ".join(sorted(k[:12] + "…" for k in known))))
 
 
 def test_the_payload_is_computed_in_one_place():
