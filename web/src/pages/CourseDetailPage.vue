@@ -2,6 +2,7 @@
 // CourseDetailPage — один курс: структура (разделы с материалами), материалы вне
 // разделов и задания. Автору курса и админу доступно редактирование (can_edit с сервера).
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, BookOpen, Paperclip, Link2, ClipboardList, Plus, Trash2, Archive,
@@ -196,7 +197,7 @@ async function archive() {
         <h2 class="mb-2 flex items-center gap-2 font-title text-sm font-bold text-text">
           <ClipboardList class="size-4 text-accent" /> {{ t('courses.assignments', 'Задания') }}
         </h2>
-        <div class="overflow-x-auto rounded-xl border border-border2 bg-card shadow-card">
+        <StickyXScroll class="rounded-xl border border-border2 bg-card shadow-card">
           <table class="w-full min-w-[520px] text-sm">
             <thead>
               <tr class="border-b border-border text-left text-xs text-text3">
@@ -233,7 +234,7 @@ async function archive() {
                    class="h-8 w-32 rounded border border-border2 bg-card2 px-2 text-xs text-text outline-none focus:border-accent" />
             <button type="button" @click="addAssignment" class="flex h-8 items-center gap-1 rounded bg-accent px-2.5 text-xs font-semibold text-white hover:bg-accent2"><Plus class="size-3.5" />{{ t('courses.addAssignment', 'Задание') }}</button>
           </div>
-        </div>
+        </StickyXScroll>
       </section>
     </template>
   </div>

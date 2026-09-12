@@ -3,6 +3,7 @@
 // удаление; кнопка «🏫 Из расписания» добавляет спарсенные группы колледжа (как в
 // десктопе). Пишется в те же таблицы (id=grp:name) → синкается в десктоп.
 import { ref, computed, watch, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { adminApi, scheduleApi, termsApi } from '@/api/endpoints'
 import AppButton from '@/components/ui/AppButton.vue'
 import TeacherSuggestionsDialog from '@/components/admin/TeacherSuggestionsDialog.vue'
@@ -514,7 +515,7 @@ async function importParsed() {
               @click="courseFilter = c">{{ locale.t('adminGroups.courseN', { n: c }) }}</button>
     </div>
 
-    <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -549,7 +550,7 @@ async function importParsed() {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <!-- ── Учебные часы группы ─────────────────────────────────────────────────── -->
     <div v-if="showHours" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showHours = false">

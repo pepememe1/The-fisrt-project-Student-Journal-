@@ -17,7 +17,6 @@
     "",
     "⚠️ Отсутствие записи = todo. Молчание НЕ означает «выполнено»."
   ],
-
   "product": "GradeBookAI",
   "product_version": "3.8.6",
   "standard": "OWASP ASVS 5.0.0",
@@ -36,7 +35,6 @@
     "заголовки прокси до неё НЕ доходят), десктоп (тот же server/app на 127.0.0.1 БЕЗ",
     "Caddy). Требование, закрытое на одном периметре, на остальных не закрыто само."
   ],
-
   "chapters": {
     "V10": {
       "status": "n/a",
@@ -47,319 +45,652 @@
       "note": "WebRTC не используется. Голосовых и видеозвонков в мессенджере нет и они отклонены осознанно (docs/MESSENGER-ADDON-PLAN-GPT.md — не потянет одноядерный VPS). Голосовой ввод идёт обычной загрузкой файла на /web/vector/stt, peer-соединений не создаётся."
     }
   },
-
   "items": {
-
     "V6.2.1": {
       "status": "done",
-      "note": "Минимум 8 символов на всех трёх точках создания пароля (регистрация, смена, заведение студента админом/по приглашению). ASVS рекомендует 15 — сознательно не берём: пароли в колледже вводят на общих машинах в аудитории, и 15 символов вернут записку под клавиатурой. Компенсируем требованием сложности (reg_utils) и анти-брутфорсом.",
+      "note": "Минимум 8 символов на всех точках создания пароля (регистрация, смена, заведение студента админом/по приглашению, заведение модератора). Порог — ОДНО число `security.MIN_PASSWORD_LEN`: до 12.09.2026 восьмёрка стояла тремя литералами, а снимок значения в нескольких местах расходится молча и всегда. ASVS рекомендует 15 — сознательно не берём: пароли в колледже вводят на общих машинах в аудитории, и 15 символов вернут записку под клавиатурой. Компенсируем требованием сложности (reg_utils) и анти-брутфорсом.",
       "evidence": [
-        {"file": "server/app/routers/auth.py", "contains": "len(body.password) < 8"},
-        {"file": "server/app/reg_utils.py", "contains": "минимум 1 заглавная"}
+        {
+          "file": "server/app/security.py",
+          "contains": "MIN_PASSWORD_LEN = 8"
+        },
+        {
+          "file": "server/app/routers/auth.py",
+          "contains": "len(body.password) < MIN_PASSWORD_LEN"
+        },
+        {
+          "file": "server/app/reg_utils.py",
+          "contains": "минимум 1 заглавная"
+        }
       ],
-      "tests": ["server/tests/test_auth.py"]
+      "tests": [
+        "server/tests/test_auth.py"
+      ]
     },
     "V6.2.8": {
       "status": "done",
       "note": "Пароль проверяется ровно как получен: hash_password/verify_password не обрезают, не приводят регистр и не нормализуют юникод. Важно не косметически — тихая нормализация на одной из двух платформ развела бы десктопный и серверный хеш, а они обязаны совпадать (один и тот же server/app/security.py).",
-      "evidence": [{"file": "server/app/security.py", "contains": "def verify_password"}],
-      "tests": ["tests/test_password_hash.py"]
+      "evidence": [
+        {
+          "file": "server/app/security.py",
+          "contains": "def verify_password"
+        }
+      ],
+      "tests": [
+        "tests/test_password_hash.py"
+      ]
     },
     "V6.3.1": {
       "status": "done",
       "note": "Анти-брутфорс по паре (IP, логин) и отдельно по IP, со скользящим окном и уборкой. Блокировка временная (5 мин), а не постоянная — иначе третий сосед по общему IP колледжа запирал бы аккаунт остальным (V6.1.1 «prevent malicious account lockout»).",
       "evidence": [
-        {"file": "server/app/throttle.py", "contains": ["def register_failure", "LOCK_SECONDS"]}
+        {
+          "file": "server/app/throttle.py",
+          "contains": [
+            "def register_failure",
+            "LOCK_SECONDS"
+          ]
+        }
       ],
-      "tests": ["server/tests/test_throttle.py", "server/tests/test_shared_ip_login.py"]
+      "tests": [
+        "server/tests/test_throttle.py",
+        "server/tests/test_shared_ip_login.py"
+      ]
     },
     "V6.3.2": {
       "status": "done",
       "note": "Учётной записи по умолчанию нет: первый администратор заводится разово через /auth/bootstrap-admin, и на НЕПУСТОЙ базе ручка отвечает 403 — то есть заводского пароля, который забыли сменить, не существует по построению.",
-      "evidence": [{"file": "server/app/routers/auth.py", "contains": "bootstrap"}],
-      "tests": ["server/tests/test_auth.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/auth.py",
+          "contains": "bootstrap"
+        }
+      ],
+      "tests": [
+        "server/tests/test_auth.py"
+      ]
     },
     "V6.3.3": {
       "status": "partial",
       "note": "Второй фактор (TOTP, RFC 6238) реализован и ОБЯЗАТЕЛЕН для роли admin на боевом сервере — одной точкой deps.require_admin. Для student/teacher/parent он недоступен вовсе, то есть по букве L2 требование закрыто лишь для административного доступа. Осознанный размен: обязать весь колледж носить телефон с приложением-аутентификатором нельзя, а добровольный второй фактор для остальных ролей — отдельная работа (не сделана).",
       "evidence": [
-        {"file": "server/app/totp.py", "contains": "def verify"},
-        {"file": "server/app/deps.py", "contains": "_require_second_factor_setup"}
+        {
+          "file": "server/app/totp.py",
+          "contains": "def verify"
+        },
+        {
+          "file": "server/app/deps.py",
+          "contains": "_require_second_factor_setup"
+        }
       ],
-      "tests": ["server/tests/test_mfa.py"]
+      "tests": [
+        "server/tests/test_mfa.py"
+      ]
     },
     "V6.4.2": {
       "status": "done",
       "note": "Ни подсказок к паролю, ни «секретных вопросов» в продукте нет — ни таблицы, ни ручки, ни поля в форме. Сторож проверяет ОТСУТСТВИЕ: наличие такого механизма и есть нарушение.",
-      "evidence": [{"file": "server/app/models.py", "contains": "class User"}],
-      "tests": ["server/tests/test_security_audit.py"]
+      "evidence": [
+        {
+          "file": "server/app/models.py",
+          "contains": "class User"
+        }
+      ],
+      "tests": [
+        "server/tests/test_security_audit.py"
+      ]
     },
     "V6.4.3": {
       "status": "done",
       "note": "Сброс пароля идёт по одноразовому коду на почту и НЕ обходит остальные проверки: после сброса выдаётся обычный путь входа, а для admin второй фактор остаётся обязательным.",
-      "evidence": [{"file": "server/app/routers/auth.py", "contains": "reset"}],
-      "tests": ["server/tests/test_password_reset.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/auth.py",
+          "contains": "reset"
+        }
+      ],
+      "tests": [
+        "server/tests/test_password_reset.py"
+      ]
     },
     "V6.5.2": {
       "status": "done",
       "note": "Секрет TOTP — 160 бит (base32, 32 символа), коды восстановления хранятся только хешами. Алфавит кодов без 0/o/1/l: их путают при переписывании, а «не сработавший код восстановления» человек трактует как потерю доступа.",
       "evidence": [
-        {"file": "server/app/totp.py", "contains": ["def new_secret", "def hash_recovery"]}
+        {
+          "file": "server/app/totp.py",
+          "contains": [
+            "def new_secret",
+            "def hash_recovery"
+          ]
+        }
       ],
-      "tests": ["server/tests/test_mfa.py"]
+      "tests": [
+        "server/tests/test_mfa.py"
+      ]
     },
-
     "V7.2.1": {
       "status": "done",
       "note": "Проверка токена — только на сервере, одной зависимостью get_current_user; клиент решений о доступе не принимает.",
-      "evidence": [{"file": "server/app/deps.py", "contains": "def get_current_user"}],
-      "tests": ["server/tests/test_auth.py", "server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/deps.py",
+          "contains": "def get_current_user"
+        }
+      ],
+      "tests": [
+        "server/tests/test_auth.py",
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
     "V7.2.3": {
       "status": "done",
       "note": "jti генерируется secrets.token_urlsafe(16) — 128 бит из криптографического источника, а не из random.",
-      "evidence": [{"file": "server/app/security.py", "contains": "def new_jti"}],
-      "tests": ["server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/security.py",
+          "contains": "def new_jti"
+        }
+      ],
+      "tests": [
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
     "V7.3.2": {
       "status": "done",
       "note": "Абсолютный срок жизни сессии — 5 часов, и refresh НЕ длиннее access (JWT_REFRESH_TTL_MIN = JWT_TTL_MIN). Раньше refresh жил 30 дней и срок «копился» до сотен часов; это и был дефект, ради которого сроки сравняли.",
-      "evidence": [{"file": "server/app/config.py", "contains": "JWT_REFRESH_TTL_MIN"}],
-      "tests": ["server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/config.py",
+          "contains": "JWT_REFRESH_TTL_MIN"
+        }
+      ],
+      "tests": [
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
     "V7.4.1": {
       "status": "done",
       "note": "Выход помечает сессию revoked, и токен перестаёт приниматься немедленно — не «истекает сам». Отзыв по jti, а не по пользователю: выход на одной машине не выбивает вторую.",
-      "evidence": [{"file": "server/app/routers/auth.py", "contains": ["def logout", "revoked = True"]}],
-      "tests": ["server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/auth.py",
+          "contains": [
+            "def logout",
+            "revoked = True"
+          ]
+        }
+      ],
+      "tests": [
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
     "V7.4.5": {
       "status": "done",
       "note": "Администратор видит активные сессии и отзывает их (страница «Мониторинг»).",
-      "evidence": [{"file": "server/app/routers/admin.py", "contains": "/sessions/revoke"}],
-      "tests": ["server/tests/test_admin_monitor.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/admin.py",
+          "contains": "/sessions/revoke"
+        }
+      ],
+      "tests": [
+        "server/tests/test_admin_monitor.py"
+      ]
     },
     "V7.5.2": {
       "status": "partial",
       "note": "Свои сессии видит и отзывает АДМИНИСТРАТОР — за любого. Сам пользователь список своих устройств не видит и чужую сессию завершить не может. Для общих компьютеров колледжа это заметный пробел: студент, забывший выйти в аудитории, сейчас может только сменить пароль. Не сделано.",
-      "evidence": [{"file": "server/app/routers/admin.py", "contains": "/sessions/revoke"}],
-      "tests": ["server/tests/test_admin_monitor.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/admin.py",
+          "contains": "/sessions/revoke"
+        }
+      ],
+      "tests": [
+        "server/tests/test_admin_monitor.py"
+      ]
     },
-
     "V8.2.1": {
       "status": "done",
       "note": "Доступ к функции ограничен явными зависимостями (require_admin и родственные) на каждой административной ручке; весь административный доступ проходит через ОДНУ точку, поэтому забыть проверку в новой ручке трудно по построению.",
-      "evidence": [{"file": "server/app/deps.py", "contains": "def require_admin"}],
-      "tests": ["server/tests/test_web.py", "server/tests/test_device_policy.py"]
+      "evidence": [
+        {
+          "file": "server/app/deps.py",
+          "contains": "def require_admin"
+        }
+      ],
+      "tests": [
+        "server/tests/test_web.py",
+        "server/tests/test_device_policy.py"
+      ]
     },
     "V8.2.2": {
       "status": "partial",
       "note": "Скоуп по строкам есть и проверяется точечными тестами (студент — только о себе, преподаватель — свои предметы/группы, родитель — только по активному согласию ребёнка). Но ПОЛНОЙ матрицы «актор × ручка × ожидание» по всем маршрутам нет, а без неё утверждение «ни одна ручка не отдаёт чужое» не доказано, а предположено. Построение матрицы и авторизационный фаззинг по ней — ближайшая работа (см. docs/security/PLAN-SECURITY-2.0.md).",
       "evidence": [
-        {"file": "server/app/webdata.py", "contains": "def "},
-        {"file": "server/app/routers/parent.py", "contains": "status"}
+        {
+          "file": "server/app/webdata.py",
+          "contains": "def "
+        },
+        {
+          "file": "server/app/routers/parent.py",
+          "contains": "status"
+        }
       ],
-      "tests": ["server/tests/test_parent_role.py", "server/tests/test_curator.py", "server/tests/test_split_teaching.py"]
+      "tests": [
+        "server/tests/test_parent_role.py",
+        "server/tests/test_curator.py",
+        "server/tests/test_split_teaching.py"
+      ]
     },
     "V8.3.1": {
       "status": "done",
       "note": "Правила авторизации живут на сервере. Клиент прячет кнопки, но это удобство, а не защита: тот же запрос уходит из десктопа, из офлайн-очереди web/src/api/outbox.js и голосовой командой — поэтому замок стоит в точке ЗАПИСИ (пример: _ensure_term_open на итоговой оценке).",
-      "evidence": [{"file": "server/app/routers/web/write.py", "contains": "_ensure_term_open"}],
-      "tests": ["server/tests/test_final_grade_lock.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/web/write.py",
+          "contains": "_ensure_term_open"
+        }
+      ],
+      "tests": [
+        "server/tests/test_final_grade_lock.py"
+      ]
     },
-
     "V9.1.1": {
       "status": "done",
       "note": "Каждый токен проверяется по подписи; невалидный даёт None и 401.",
-      "evidence": [{"file": "server/app/security.py", "contains": "def decode_token"}],
-      "tests": ["server/tests/test_auth.py"]
+      "evidence": [
+        {
+          "file": "server/app/security.py",
+          "contains": "def decode_token"
+        }
+      ],
+      "tests": [
+        "server/tests/test_auth.py"
+      ]
     },
     "V9.1.2": {
       "status": "done",
       "note": "Алгоритм задан БЕЛЫМ СПИСКОМ из одного значения (algorithms=[JWT_ALG]). Это закрывает классическую подмену alg=none и downgrade на HMAC: библиотека не станет проверять токен алгоритмом из его же заголовка.",
-      "evidence": [{"file": "server/app/security.py", "contains": "algorithms=[JWT_ALG]"}],
-      "tests": ["server/tests/test_auth.py"]
+      "evidence": [
+        {
+          "file": "server/app/security.py",
+          "contains": "algorithms=[JWT_ALG]"
+        }
+      ],
+      "tests": [
+        "server/tests/test_auth.py"
+      ]
     },
     "V9.2.1": {
       "status": "done",
       "note": "exp кладётся при выпуске и проверяется библиотекой при разборе; просроченный токен неотличим от неверного — оба дают None.",
-      "evidence": [{"file": "server/app/security.py", "contains": "\"exp\": exp"}],
-      "tests": ["server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/security.py",
+          "contains": "\"exp\": exp"
+        }
+      ],
+      "tests": [
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
     "V9.2.2": {
       "status": "done",
       "note": "ТИП токена проверяется. До 29.08.2026 не проверялся вовсе: подпись у всех наших токенов общая, поэтому пропуском работал ЛЮБОЙ выданный нами токен, включая refresh и короткий challenge второго фактора — то есть MFA обходился целиком. Токены БЕЗ поля typ пускаем намеренно: старый формат, доживают свои пять часов, иначе выкладка выбила бы из аккаунта всех разом.",
-      "evidence": [{"file": "server/app/deps.py", "contains": "typ"}],
-      "tests": ["server/tests/test_mfa.py", "server/tests/test_token_lifecycle.py"]
+      "evidence": [
+        {
+          "file": "server/app/deps.py",
+          "contains": "typ"
+        }
+      ],
+      "tests": [
+        "server/tests/test_mfa.py",
+        "server/tests/test_token_lifecycle.py"
+      ]
     },
-
     "V11.3.2": {
       "status": "done",
       "note": "Симметричное шифрование — только проверенные реализации: SQLCipher (AES-256-CBC + HMAC) для файлов баз, Fernet (AES-128-CBC + HMAC-SHA256) для отдельных значений kv_store. Своей криптографии в продукте нет нигде.",
       "evidence": [
-        {"file": "server/app/db.py", "contains": "PRAGMA key"},
-        {"file": "data/local_db.py", "contains": "sqlcipher"}
+        {
+          "file": "server/app/db.py",
+          "contains": "PRAGMA key"
+        },
+        {
+          "file": "data/local_db.py",
+          "contains": "sqlcipher"
+        }
       ],
-      "tests": ["tests/test_local_db_security.py"]
+      "tests": [
+        "tests/test_local_db_security.py"
+      ]
     },
     "V11.3.3": {
       "status": "done",
       "note": "Шифротекст защищён от изменения аутентифицированным шифрованием: Fernet несёт HMAC-SHA256, SQLCipher — HMAC на страницу. Подменённый байт даёт ошибку разбора, а не «другие данные».",
-      "evidence": [{"file": "data/security.py", "contains": "Fernet"}],
-      "tests": ["tests/test_local_db_security.py", "tests/test_data_key_recovery.py"]
+      "evidence": [
+        {
+          "file": "data/security.py",
+          "contains": "Fernet"
+        }
+      ],
+      "tests": [
+        "tests/test_local_db_security.py",
+        "tests/test_data_key_recovery.py"
+      ]
     },
     "V11.4.2": {
       "status": "done",
       "note": "Пароли — двухэтапная функция выработки ключа: PBKDF2-HMAC-SHA512 (200 000 итераций) и следом PBKDF2 на Стрибог-512 (Р 50.1.111-2016). Формат самоописываемый, старые одноэтапные хеши ещё проверяются, но не выдаются. ГОСТ-этап здесь не «для галочки по 152-ФЗ»: приказ ФСТЭК № 21 ждёт отечественных примитивов, а выбросить SHA-512 ради этого значило бы ослабить то, что уже проверено миром.",
       "evidence": [
-        {"file": "server/app/security.py", "contains": ["_SHA_ITERS = 200_000", "hybrid_sha512_gost512"]}
+        {
+          "file": "server/app/security.py",
+          "contains": [
+            "_SHA_ITERS = 200_000",
+            "hybrid_sha512_gost512"
+          ]
+        }
       ],
-      "tests": ["tests/test_password_hash.py"]
+      "tests": [
+        "tests/test_password_hash.py"
+      ]
     },
     "V11.5.1": {
       "status": "done",
       "note": "Непредсказуемые значения (jti, секрет TOTP, коды восстановления, приглашения, одноразовые пароли) берутся из secrets, а не из random. Встроенный hash() тоже не годится — он солится при каждом старте процесса, и на этом мы уже обжигались с меткой аватарки.",
       "evidence": [
-        {"file": "server/app/security.py", "contains": "secrets.token_urlsafe"},
-        {"file": "server/app/totp.py", "contains": "secrets"}
+        {
+          "file": "server/app/security.py",
+          "contains": "secrets.token_urlsafe"
+        },
+        {
+          "file": "server/app/totp.py",
+          "contains": "secrets"
+        }
       ],
-      "tests": ["server/tests/test_mfa.py", "server/tests/test_student_invites.py"]
+      "tests": [
+        "server/tests/test_mfa.py",
+        "server/tests/test_student_invites.py"
+      ]
     },
-
     "V12.1.1": {
       "status": "done",
       "note": "TLS терминирует Caddy с автоматическим сертификатом Let's Encrypt; современные версии протокола — умолчание Caddy, старые он не включает. HSTS на год, с поддоменами и preload.",
-      "evidence": [{"file": "server/Caddyfile", "contains": "Strict-Transport-Security"}],
-      "tests": ["server/tests/test_caddyfile.py"]
+      "evidence": [
+        {
+          "file": "server/Caddyfile",
+          "contains": "Strict-Transport-Security"
+        }
+      ],
+      "tests": [
+        "server/tests/test_caddyfile.py"
+      ]
     },
     "V12.2.1": {
       "status": "done",
       "note": "Весь внешний трафик по HTTPS; в мобильном приложении открытый HTTP запрещён отдельно (networkSecurityConfig), потому что заголовки сервера туда не доходят — страницу отдаёт локальный сервер Capacitor из бандла.",
       "evidence": [
-        {"file": "server/Caddyfile", "contains": "esstu-gradebook.ru"},
-        {"file": "web/android/app/src/main/res/xml/network_security_config.xml", "contains": "cleartextTrafficPermitted"}
+        {
+          "file": "server/Caddyfile",
+          "contains": "esstu-gradebook.ru"
+        },
+        {
+          "file": "web/android/app/src/main/res/xml/network_security_config.xml",
+          "contains": "cleartextTrafficPermitted"
+        }
       ],
-      "tests": ["server/tests/test_caddyfile.py"]
+      "tests": [
+        "server/tests/test_caddyfile.py"
+      ]
     },
     "V12.2.2": {
       "status": "done",
       "note": "Сертификат публично доверенный (Let's Encrypt), самоподписанных наружу нет.",
-      "evidence": [{"file": "server/Caddyfile", "contains": "esstu-gradebook.ru"}],
-      "tests": ["server/tests/test_caddyfile.py"]
+      "evidence": [
+        {
+          "file": "server/Caddyfile",
+          "contains": "esstu-gradebook.ru"
+        }
+      ],
+      "tests": [
+        "server/tests/test_caddyfile.py"
+      ]
     },
-
     "V13.2.4": {
       "status": "done",
       "note": "Внешние адресаты заданы БЕЛЫМИ списками, а не запретами: CSP перечисляет разрешённые источники (frame-src — только YouTube/VK/Rutube), картинки GIF-пикера сверяются по хосту static.klipy.com, CORS сужен на один домен. Чёрный список здесь не годится принципиально: он всегда неполон, и первым пропущенным окажется нужный атакующему.",
       "evidence": [
-        {"file": "server/Caddyfile", "contains": "Content-Security-Policy"},
-        {"file": "server/app/gif_service.py", "contains": "def is_allowed_url"},
-        {"file": "server/app/config.py", "contains": "ALLOWED_ORIGINS"}
+        {
+          "file": "server/Caddyfile",
+          "contains": "Content-Security-Policy"
+        },
+        {
+          "file": "server/app/gif_service.py",
+          "contains": "def is_allowed_url"
+        },
+        {
+          "file": "server/app/config.py",
+          "contains": "ALLOWED_ORIGINS"
+        }
       ],
-      "tests": ["server/tests/test_caddyfile.py", "server/tests/test_gif.py"]
+      "tests": [
+        "server/tests/test_caddyfile.py",
+        "server/tests/test_gif.py"
+      ]
     },
     "V13.3.1": {
       "status": "partial",
       "note": "Секреты читаются ОДНОЙ точкой с явным порядком: учётные данные службы systemd → файл <ПЕРЕМЕННАЯ>_FILE → переменная окружения. Порядок именно такой потому, что переменные окружения процесса видны в /proc/<pid>/environ и в systemctl show — то есть ключ от базы с ПДн читает любой, кто получил root. Настоящего хранилища (Vault/KMS) НЕТ: ключ лежит файлом на той же машине, что и база. Закрывается переездом на железо ВСГУТУ, а не правкой кода.",
       "evidence": [
-        {"file": "server/app/secrets_source.py", "contains": ["def get", "def source_of"]}
+        {
+          "file": "server/app/secrets_source.py",
+          "contains": [
+            "def get",
+            "def source_of"
+          ]
+        }
       ],
-      "tests": ["server/tests/test_secrets_source.py"]
+      "tests": [
+        "server/tests/test_secrets_source.py"
+      ]
     },
     "V13.4.2": {
       "status": "done",
       "note": "Отладочные режимы на бою выключены: стек-трейс наружу не уходит (единый обработчик), карты исходников фронтенда не собираются, console.log в web/src нет, пояснительные комментарии вырезаются из index.html на сборке.",
       "evidence": [
-        {"file": "server/app/main.py", "contains": "exception_handler"},
-        {"file": "web/build/stripHtmlComments.js", "contains": "comment"}
+        {
+          "file": "server/app/main.py",
+          "contains": "exception_handler"
+        },
+        {
+          "file": "web/build/stripHtmlComments.js",
+          "contains": "comment"
+        }
       ],
-      "tests": ["web/tests/stripHtmlComments.test.mjs"]
+      "tests": [
+        "web/tests/stripHtmlComments.test.mjs"
+      ]
     },
     "V13.4.5": {
       "status": "done",
       "note": "Неизвестный адрес API отдаёт честный 404, а не страницу SPA. До 29.08.2026 отдавал 200 и HTML, и это било дважды: клиент получал HTML там, где ждал JSON, а ТЕСТ, стучащийся в опечатанный адрес, зеленел. Так один существующий тест не выполнялся ни разу.",
-      "evidence": [{"file": "server/app/main.py", "contains": "_is_api_path"}],
-      "tests": ["server/tests/test_spa_fallback.py"]
+      "evidence": [
+        {
+          "file": "server/app/main.py",
+          "contains": "_is_api_path"
+        }
+      ],
+      "tests": [
+        "server/tests/test_spa_fallback.py"
+      ]
     },
-
     "V14.1.1": {
       "status": "partial",
       "note": "Сроки хранения заданы по каждой сущности отдельно и вынесены в переменные окружения (надгробия 180 дней, сессии 90, уведомления 90/365, тела удалённых сообщений 180). Чего нет: документа-описи «какие категории ПДн, где лежат, сколько живут» в терминах 152-ФЗ — есть только код. Для приёмки нужен именно документ.",
-      "evidence": [{"file": "server/app/retention.py", "contains": "TOMBSTONE_DAYS"}],
-      "tests": ["server/tests/test_retention.py"]
+      "evidence": [
+        {
+          "file": "server/app/retention.py",
+          "contains": "TOMBSTONE_DAYS"
+        }
+      ],
+      "tests": [
+        "server/tests/test_retention.py"
+      ]
     },
-
     "V16.2.1": {
       "status": "done",
       "note": "Каждая запись журнала безопасности несёт когда/кто/откуда/что: метку времени в двух видах (unix для сортировки, ISO для чтения), логин и роль инициатора, IP, устройство, код действия, цель и уровень.",
       "evidence": [
-        {"file": "server/app/models.py", "contains": "class AuditEvent"},
-        {"file": "server/app/audit.py", "contains": "def log"}
+        {
+          "file": "server/app/models.py",
+          "contains": "class AuditEvent"
+        },
+        {
+          "file": "server/app/audit.py",
+          "contains": "def log"
+        }
       ],
-      "tests": ["server/tests/test_audit.py"]
+      "tests": [
+        "server/tests/test_audit.py"
+      ]
     },
     "V16.2.5": {
       "status": "done",
       "note": "«Сырые» ПДн в журнал не пишутся: в detail идёт контекст без имён и оценок, а сам журнал не уходит третьим сторонам. Отдельно закрыт канал утечки в LLM — ответы с фамилиями вообще не отправляются в модель, и это держит сторож-СВОЙСТВО, а не перечисление мест.",
-      "evidence": [{"file": "server/app/audit.py", "contains": "detail"}],
-      "tests": ["server/tests/test_audit.py", "server/tests/test_vector_never_voices_names.py"]
+      "evidence": [
+        {
+          "file": "server/app/audit.py",
+          "contains": "detail"
+        }
+      ],
+      "tests": [
+        "server/tests/test_audit.py",
+        "server/tests/test_vector_never_voices_names.py"
+      ]
     },
     "V16.3.1": {
       "status": "done",
       "note": "Пишутся и удачные, и неудачные входы, и выдача/отзыв доступа.",
-      "evidence": [{"file": "server/app/routers/auth.py", "contains": "audit"}],
-      "tests": ["server/tests/test_audit.py"]
+      "evidence": [
+        {
+          "file": "server/app/routers/auth.py",
+          "contains": "audit"
+        }
+      ],
+      "tests": [
+        "server/tests/test_audit.py"
+      ]
     },
     "V16.3.4": {
       "status": "done",
       "note": "Отказ САМОГО журнала теперь громкий. audit.log намеренно не бросает исключений (сбой следа не должен ронять действие человека), но до 01.09.2026 он ещё и МОЛЧАЛ: не доехала миграция, полон диск, база в read-only — продукт работает как ни в чём не бывало, а следа нет, и узнаёшь об этом ровно тогда, когда след понадобился. Теперь предупреждение один раз за запуск, в ОБЫЧНЫЙ лог: писать в аудит отказ аудита — второй круг.",
-      "evidence": [{"file": "server/app/audit.py", "contains": "def log"}],
-      "tests": ["server/tests/test_audit_silence.py"]
+      "evidence": [
+        {
+          "file": "server/app/audit.py",
+          "contains": "def log"
+        }
+      ],
+      "tests": [
+        "server/tests/test_audit_silence.py"
+      ]
     },
     "V16.4.2": {
       "status": "done",
       "note": "Журнал только-на-добавление на уровне приложения И заметен к правке на уровне базы: каждая запись несёт хеш предыдущей (01.09.2026). Правка содержимого ломает пересчёт у себя, а удаление из середины, вставка и перестановка — у соседей. Проверка доступна администратору (GET /web/admin/audit/integrity) и полным прогоном с машины (server/verify_audit.py, ненулевой код выхода при расхождении). ⚠️ ГРАНИЦА НАЗВАНА И ЗАКРЕПЛЕНА ТЕСТОМ: цепочка делает подмену ЗАМЕТНОЙ, но не невозможной — владеющий базой может пересчитать хвост целиком. Против этого работает только контрольная точка вне машины (V16.4.3). Утверждение «журнал нельзя подделать» неверно, и test_a_fully_rewritten_tail_still_verifies стоит именно затем, чтобы оно не появилось в документах.",
       "evidence": [
-        {"file": "server/app/audit.py", "contains": ["def entry_digest", "def verify_chain", "_HASHED_FIELDS"]},
-        {"file": "server/app/models.py", "contains": "entry_hash"},
-        {"file": "server/app/db.py", "contains": "_ensure_audit_chain_columns"},
-        {"file": "server/app/routers/web/write.py", "contains": "/admin/audit/integrity"},
-        {"file": "server/verify_audit.py", "contains": "verify_chain"}
+        {
+          "file": "server/app/audit.py",
+          "contains": [
+            "def entry_digest",
+            "def verify_chain",
+            "_HASHED_FIELDS"
+          ]
+        },
+        {
+          "file": "server/app/models.py",
+          "contains": "entry_hash"
+        },
+        {
+          "file": "server/app/db.py",
+          "contains": "_ensure_audit_chain_columns"
+        },
+        {
+          "file": "server/app/routers/web/write.py",
+          "contains": "/admin/audit/integrity"
+        },
+        {
+          "file": "server/verify_audit.py",
+          "contains": "verify_chain"
+        }
       ],
-      "tests": ["server/tests/test_audit_chain.py", "server/tests/test_db_migrations.py"]
+      "tests": [
+        "server/tests/test_audit_chain.py",
+        "server/tests/test_db_migrations.py"
+      ]
     },
     "V16.4.3": {
       "status": "partial",
       "note": "Механизм контрольной точки есть (audit.checkpoint — дата, число записей, голова цепочки; короткая строка, пригодная к переписыванию рукой). Чего НЕТ: внешнего хранилища, куда она уезжала бы автоматически. Сейчас журнал живёт в той же базе, на той же машине, что и защищаемые данные, — компрометация сервера означает и потерю следа, а сходящаяся цепочка сама по себе этого не лечит. Закрывается вместе с неизменяемым хранилищем резервных копий: одна и та же нехватка — место, куда сервер может писать, но не может стирать.",
       "evidence": [
-        {"file": "server/app/audit.py", "contains": "def checkpoint"},
-        {"file": "server/verify_audit.py", "contains": "--checkpoint"}
+        {
+          "file": "server/app/audit.py",
+          "contains": "def checkpoint"
+        },
+        {
+          "file": "server/verify_audit.py",
+          "contains": "--checkpoint"
+        }
       ],
-      "tests": ["server/tests/test_audit_chain.py"]
+      "tests": [
+        "server/tests/test_audit_chain.py"
+      ]
     },
     "V16.5.1": {
       "status": "done",
       "note": "Наружу уходит общее сообщение, стек-трейса нет.",
-      "evidence": [{"file": "server/app/main.py", "contains": "exception_handler"}],
-      "tests": ["server/tests/test_security_audit.py"]
+      "evidence": [
+        {
+          "file": "server/app/main.py",
+          "contains": "exception_handler"
+        }
+      ],
+      "tests": [
+        "server/tests/test_security_audit.py"
+      ]
     },
     "V16.5.2": {
       "status": "done",
       "note": "Отказ внешнего ресурса не превращается в отказ продукта и не открывает доступ: нет LLM — работает шаблонизатор; нет портала расписания — берётся кэш; нет ключей хранилища — вложения отвечают честным 503, а не принимают файл молча; нет сети у десктопа — журнал работает из локальной копии.",
       "evidence": [
-        {"file": "server/app/storage.py", "contains": "def mode"},
-        {"file": "server/app/vector_llm.py", "contains": "def voice"}
+        {
+          "file": "server/app/storage.py",
+          "contains": "def mode"
+        },
+        {
+          "file": "server/app/vector_llm.py",
+          "contains": "def voice"
+        }
       ],
-      "tests": ["server/tests/test_vector_server.py", "tests/test_offline_first.py"]
+      "tests": [
+        "server/tests/test_vector_server.py",
+        "tests/test_offline_first.py"
+      ]
     },
-
     "V5.2.1": {
       "status": "done",
       "note": "Тип вложения — по БЕЛОМУ списку. Чёрный всегда неполон, и первым пропущенным окажется исполняемый. Видео и картинки в список не входят: видео живёт ссылкой на видеохостинг.",
-      "evidence": [{"file": "server/app/storage.py", "contains": "ALLOWED_MIME"}],
-      "tests": ["web/tests/attachments.test.mjs"]
+      "evidence": [
+        {
+          "file": "server/app/storage.py",
+          "contains": "ALLOWED_MIME"
+        }
+      ],
+      "tests": [
+        "web/tests/attachments.test.mjs"
+      ]
     },
-
     "V3.4.1": {
       "status": "n/a",
       "note": "Сессионных cookie в продукте нет: токен живёт в localStorage, потому что тот же клиент работает внутри мобильного приложения (origin https://localhost, cookie до нашего домена не относятся) и внутри десктопа на 127.0.0.1. Размен назван честно: cookie с HttpOnly устойчивее к XSS, чем localStorage, и компенсируется это тем, что скриптов третьих сторон нет вовсе (script-src 'self' и в заголовке Caddy, и в мете index.html)."
@@ -367,30 +698,59 @@
     "V3.7.1": {
       "status": "done",
       "note": "Разметку в сообщениях разбирает свой markdownLite: сперва экранирует, потом преобразует — порядок именно такой, иначе преобразование вернуло бы в текст то, что уже экранировано. Внешнего DOMPurify нет намеренно (чистые лицензии, и меньше стороннего кода в периметре).",
-      "evidence": [{"file": "web/src/utils/markdownLite.js", "contains": "escape"}],
-      "tests": ["web/tests/markdownLite.links.test.mjs", "web/tests/markdownLite.censorMask.test.mjs"]
+      "evidence": [
+        {
+          "file": "web/src/utils/markdownLite.js",
+          "contains": "escape"
+        }
+      ],
+      "tests": [
+        "web/tests/markdownLite.links.test.mjs",
+        "web/tests/markdownLite.censorMask.test.mjs"
+      ]
     },
-
     "V15.2.2": {
       "status": "done",
       "note": "Состав поставки объявлен: SBOM в формате CycloneDX по ОБЪЯВЛЕННЫМ спискам (requirements/package-lock), а не по тому, что оказалось на машине сборки. Разница принципиальная — именно «оказалось установлено» скрывало отсутствие requests в server/requirements.txt: на бою он стоял транзитивно, и SBOM по окружению показал бы благополучие там, где инструкция по установке была неполной.",
-      "evidence": [{"file": "tools/make_sbom.sh", "contains": "cyclonedx"}],
-      "tests": ["server/tests/test_requirements_complete.py"]
+      "evidence": [
+        {
+          "file": "tools/make_sbom.sh",
+          "contains": "cyclonedx"
+        }
+      ],
+      "tests": [
+        "server/tests/test_requirements_complete.py"
+      ]
     },
     "V15.2.3": {
       "status": "partial",
       "note": "Зависимости объявлены поимённо и сверяются между requirements.txt и pyproject.toml (расхождение уже ловили: deep-translator убрали из одного и забыли в другом, и `uv sync` вернул бы Google-переводчик вместе с трансграничной передачей переписки). Чего НЕТ: регулярной проверки на известные уязвимости — pip-audit/npm audit в CI не заведены, и связь «вышла CVE → затронуты ли мы» пока делается руками.",
-      "evidence": [{"file": "server/requirements.txt", "contains": "fastapi"}],
-      "tests": ["server/tests/test_requirements_complete.py"]
+      "evidence": [
+        {
+          "file": "server/requirements.txt",
+          "contains": "fastapi"
+        }
+      ],
+      "tests": [
+        "server/tests/test_requirements_complete.py"
+      ]
     },
     "V15.3.1": {
       "status": "partial",
       "note": "Артефакт деплоя НЕИЗМЕНЯЕМЫЙ и ВОСПРОИЗВОДИМЫЙ: две сборки на одном коммите дают побайтово одинаковый архив (замерено), состав выводится из импортов, а не ведётся руками, манифест несёт SHA-256 каждого файла. Чего нет: КРИПТОГРАФИЧЕСКОЙ ПОДПИСИ. Хеш доказывает целостность при передаче, но не происхождение — подменивший артефакт подменит и хеш рядом с ним. Это открытый пункт и для .exe, и для OTA-бандла телефонов.",
       "evidence": [
-        {"file": "tools/build_release.py", "contains": "sha256"},
-        {"file": "deploy/deploy-release.sh", "contains": "health"}
+        {
+          "file": "tools/build_release.py",
+          "contains": "sha256"
+        },
+        {
+          "file": "deploy/deploy-release.sh",
+          "contains": "health"
+        }
       ],
-      "tests": ["server/tests/test_release_artifact.py"]
+      "tests": [
+        "server/tests/test_release_artifact.py"
+      ]
     }
   }
 }

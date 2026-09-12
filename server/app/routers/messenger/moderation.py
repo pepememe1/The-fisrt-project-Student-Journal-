@@ -39,6 +39,399 @@ def moderation_chat(user: User = Depends(get_current_user), db: Session = Depend
     return {"conversation_id": conv_id, "kind": "moderation"}
 
 
+# ── ОБРАЩЕНИЯ: автоответчик, категории, тикеты ───────────────────────────────────────
+#
+# 🔑 ЗАЧЕМ АВТООТВЕТЧИК (12.09.2026, требование Влада). Человек пишет в модерацию «у меня
+# проблема» — и до разбора нужен ещё один круг переписки, только чтобы выяснить, о чём
+# речь. Список тем снимает этот круг: модератор открывает тикет, уже зная тему.
+#
+# 🔴 НО У АВТООТВЕТЧИКА ОБЯЗАНА БЫТЬ ДВЕРЬ НАРУЖУ. Робот, из которого нельзя выйти к
+# человеку, — худшее, что бывает в поддержке: он превращает обращение в тупик ровно для
+# тех случаев, которые в список не попали. Поэтому «Другое» и любая просьба позвать
+# человека поднимают тикет СРОЧНЫМ и ставят его в самый верх очереди.
+SUPPORT_CATEGORIES = [
+    {"code": "harassment", "label": "Оскорбления или травля"},
+    {"code": "spam", "label": "Спам или реклама"},
+    {"code": "content", "label": "Неприемлемое содержимое"},
+    {"code": "account", "label": "Доступ к аккаунту"},
+    {"code": "mute", "label": "Не согласен с ограничением"},
+    {"code": "other", "label": "Другое"},
+    {"code": "human", "label": "Позвать человека"},
+]
+# Срочные по построению: наш список их случай не описывает, значит выбирать дальше нечего.
+URGENT_CATEGORIES = {"other", "human"}
+_CATEGORY_CODES = {c["code"] for c in SUPPORT_CATEGORIES}
+
+# Фразы, по которым просьбу позвать человека узнаём в СВОБОДНОМ тексте. Список намеренно
+# короткий и по основам: длинный превращается в угадывание, а цена ошибки здесь мала —
+# срочный тикет просто раньше попадёт к модератору.
+_HUMAN_STEMS = ("живой человек", "живого человека", "позов", "позва", "оператор",
+                "не бот", "с человеком", "нужен человек")
+
+# Через сколько суток молчания тикет, взятый в работу, закрывается сам.
+# ⚠️ Проверяется ПРИ ЧТЕНИИ очереди, а не планировщиком: на одноядерном бою лишний поток
+# дороже пользы, и это тот же приём, что у истёкшего мьюта и у напоминаний.
+SUPPORT_AUTOCLOSE_DAYS = 14
+# Сколько взятых в работу тикетов просматриваем за одно чтение очереди.
+_AUTOCLOSE_SCAN_LIMIT = 200
+
+
+def _ticket_open(db: Session, conv_id: str):
+    """Действующий тикет беседы или None. Открытый и взятый в работу — оба «действующие»:
+    пока модератор разбирает, второй тикет на то же обращение заводить нечего."""
+    return (db.query(SupportTicket)
+            .filter(SupportTicket.conversation_id == conv_id,
+                    SupportTicket.status.in_(("open", "in_review")))
+            .order_by(SupportTicket.id.desc()).first())
+
+
+#Ответ на просьбу позвать человека — ОДНОЙ строкой: её пишут из двух мест (первое
+#сообщение и эскалация внутри обращения), и две копии разошлись бы молча.
+_HUMAN_ACK = ("Принято, зову человека. Обращение помечено срочным — "
+              "модератор подключится к этому чату.")
+#Подпись невыбранной темы. Пустая строка в очереди читается как поломка выдачи, а не как
+#«человек ещё не ответил роботу».
+NO_CATEGORY_LABEL = "Тема не выбрана"
+
+
+def _category_label(code: str) -> str:
+    if not code:
+        return NO_CATEGORY_LABEL
+    return next((c["label"] for c in SUPPORT_CATEGORIES if c["code"] == code), code)
+
+
+def _autoresponder_text() -> str:
+    lines = ["Здравствуйте! Это модерация. Чтобы разобрать быстрее, выберите тему обращения:"]
+    lines += ["- " + c["label"] for c in SUPPORT_CATEGORIES]
+    lines.append("Если ничего не подходит — выберите «Другое» или попросите позвать человека.")
+    return "\n".join(lines)
+
+
+def _post_system(db: Session, conv_id: str, body: str):
+    """Служебная реплика в беседу обращения от лица «Вектора» (SYSTEM_SENDER_ID).
+
+    ⚠️ Не от лица модератора: пока тикет никто не взял, подписывать автоответ живым
+    человеком значит обещать, что он уже читает, — а он ещё нет."""
+    m = Message(conversation_id=conv_id, sender_id=SYSTEM_SENDER_ID,
+                body=body[:_MAX_MSG_CHARS], created_at=_now())
+    db.add(m)
+    db.commit()
+    _broadcast(db, conv_id)
+    return m
+
+
+def looks_like_human_request(body: str) -> bool:
+    """Просит ли человек живого человека. Отдельной функцией — её зовут и хук отправки,
+    и тест; повтор условия рядом с вызывающим разошёлся бы молча."""
+    low = (body or "").lower()
+    return any(s in low for s in _HUMAN_STEMS)
+
+
+def open_support_ticket(db: Session, conv_id: str, user_id: str, category: str,
+                        urgent: bool = False):
+    """Завести обращение. Пустая тема — законное состояние «ещё не выбрана».
+
+    ⚠️ Неизвестный код превращается в ПУСТУЮ тему, а не в «Другое»: «Другое» срочное по
+    построению, и подстановка его вместо мусора от клиента подняла бы чужое обращение в
+    самый верх очереди, ничего при этом не объяснив модератору."""
+    code = category if category in _CATEGORY_CODES else ""
+    now = _now()
+    row = SupportTicket(conversation_id=conv_id, user_id=user_id, category=code,
+                        urgent=bool(urgent or code in URGENT_CATEGORIES),
+                        status="open", created_at=now, last_user_at=now)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def on_moderation_message(db: Session, conv, user, body: str) -> None:
+    """Хук отправки сообщения В БЕСЕДУ ОБРАЩЕНИЙ. Зовётся ПОСЛЕ commit и обёрнут в
+    try/except у вызывающего: сбой очереди не имеет права уронить уже отправленное
+    сообщение (то же правило, что у системных каналов оценок и расписания).
+
+    Что делает:
+      - просьбу позвать человека превращает в СРОЧНЫЙ тикет сразу, без вопросов;
+      - ЛЮБОЕ первое сообщение заводит тикет и один раз показывает список тем;
+      - если тикет уже есть, двигает метку «человек написал».
+
+    🔥 ТИКЕТ ЗАВОДИТСЯ ДАЖЕ БЕЗ ВЫБРАННОЙ ТЕМЫ, и это не мелочь. Пока он заводился только
+    по нажатию кнопки, человек, написавший «у меня проблема» и не выбравший ничего,
+    ПРОПАДАЛ из очереди целиком: сообщение отправлено, ошибок нет, тикета нет — ровно тот
+    тихий отказ, против которого вся эта очередь и заведена. Тема — состояние обращения,
+    а не условие его существования.
+
+    ⚠️ Дверь наружу работает и ВНУТРИ открытого обращения: анкету прошли, а разговор зашёл
+    в тупик — это и есть случай, ради которого дверь заведена. Иначе выбравший тему
+    оказывался бы заперт в ней до конца переписки.
+    """
+    if getattr(conv, "kind", "") != "moderation":
+        return
+    wants_human = looks_like_human_request(body)
+    existing = _ticket_open(db, conv.id)
+    if existing is not None:
+        existing.last_user_at = _now()
+        escalated = wants_human and not existing.urgent
+        if escalated:
+            existing.urgent = True
+            if not existing.category:
+                existing.category = "human"
+        db.commit()
+        if escalated:
+            _post_system(db, conv.id, _HUMAN_ACK)
+        return
+    if wants_human:
+        open_support_ticket(db, conv.id, user.id, "human", urgent=True)
+        _post_system(db, conv.id, _HUMAN_ACK)
+        return
+    # Автоответчик показываем ОДИН раз на обращение — повтор на каждое сообщение
+    # превращает чат в переписку с роботом, из которой человек уходит, не дождавшись.
+    # Признак «уже здоровались» — САМ ТИКЕТ, а не разбор прошлых сообщений: удалённая или
+    # пересланная реплика сдвинула бы такой разбор, и робот поздоровался бы заново.
+    open_support_ticket(db, conv.id, user.id, "")
+    _post_system(db, conv.id, _autoresponder_text())
+
+
+@router.get("/moderation/categories")
+def moderation_categories(user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """Список тем обращения — ОДИН источник правды для кнопок клиента.
+
+    ⚠️ Вместе со списком отдаётся СОСТОЯНИЕ моего обращения (`current`). Без него клиент
+    не знает, выбрана ли тема, и либо показывает кнопки тому, кто уже всё выбрал, либо
+    прячет их у того, кто ещё нет, — а решать это по собственной памяти вкладки нельзя:
+    человек заходит с телефона и с компьютера, и обращение у него одно.
+    """
+    row = _ticket_open(db, "mod:" + user.id)
+    current = None
+    if row is not None:
+        current = {"id": row.id, "category": row.category or "",
+                   "category_label": _category_label(row.category),
+                   "urgent": bool(row.urgent), "status": row.status,
+                   "claimed": bool(row.claimed_by)}
+    return {"categories": SUPPORT_CATEGORIES, "urgent": sorted(URGENT_CATEGORIES),
+            "current": current}
+
+
+@router.post("/moderation/category")
+def moderation_pick_category(payload: dict = Body(...),
+                             user: User = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Человек выбрал тему обращения — заводим тикет.
+
+    ⚠️ Код темы проверяется по ЗАКРЫТОМУ списку: иначе в очередь приезжает произвольная
+    строка от клиента, и фильтр по теме перестаёт что-либо значить."""
+    if user.role == "admin":
+        raise HTTPException(status_code=403,
+                            detail="Администратор отвечает на обращения, а не пишет в них")
+    code = (payload.get("code") or "").strip()
+    if code not in _CATEGORY_CODES:
+        raise HTTPException(status_code=400, detail="Неизвестная тема обращения")
+    conv_id = "mod:" + user.id
+    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Чат с модерацией ещё не открыт")
+    existing = _ticket_open(db, conv_id)
+    if existing is not None:
+        # Тему у уже открытого тикета меняем, а второй не заводим: у человека одно
+        # обращение, и два тикета на него разошлись бы по разным модераторам.
+        existing.category = code
+        if code in URGENT_CATEGORIES:
+            existing.urgent = True
+        db.commit()
+        row = existing
+    else:
+        row = open_support_ticket(db, conv_id, user.id, code)
+    label = _category_label(code)
+    tail = ("Обращение помечено срочным, модератор подключится к чату." if row.urgent
+            else "Опишите, что случилось, — модератор ответит в этом чате.")
+    _post_system(db, conv_id, "Тема обращения: «%s». %s" % (label, tail))
+    return {"ok": True, "ticket_id": row.id, "urgent": bool(row.urgent),
+            "category": row.category or "", "category_label": label}
+
+
+# ── ОЧЕРЕДЬ ОБРАЩЕНИЙ ДЛЯ МОДЕРАЦИИ ──────────────────────────────────────────────────
+def _autoclose_stale(db: Session) -> int:
+    """«Умное» закрытие: взятый в работу тикет, где модератор ответил, а человек молчит
+    дольше срока, закрывается сам.
+
+    🔑 ПОЧЕМУ ЭТО НУЖНО. Тикет, который закрывает только человек, не закрывает НИКТО:
+    разобранное обращение висит в очереди неделями, очередь растёт, и модератор перестаёт
+    её просматривать. Та же болезнь, что у сигнала, который всегда красный, и ровно та
+    причина, по которой у мьюта появился срок.
+
+    ⚠️ Закрываем ТОЛЬКО те, где последним говорила модерация. Если последним написал
+    человек — молчит как раз модерация, и автозакрытие спрятало бы её же долг.
+    🔥 СРОК ОТСЧИТЫВАЕТСЯ ОТ ПОСЛЕДНЕГО ОТВЕТА МОДЕРАЦИИ, А НЕ ОТ ВЗЯТИЯ В РАБОТУ, и это
+    куплено дефектом в обе стороны (нашёл Полковник). От взятия — значит тикет, взятый
+    три недели назад, закрывался бы на первом же чтении очереди СРАЗУ после ответа
+    модератора: человек получал бы «обращение закрыто» через минуту после ответа, не
+    успев его прочитать. А парная проверка «человек писал позже взятия» гасила
+    закрытие навсегда, потому что `claim` сам пишет в чат приветствие и человек
+    отвечает на него — то есть механизм не срабатывал ровно там, ради чего написан.
+    ⚠️ Проверяется ПРИ ЧТЕНИИ очереди, планировщика нет: на одноядерном бою лишний поток
+    дороже пользы (тот же приём, что у истёкшего мьюта и у напоминаний). Отсюда и предел
+    просмотра: взятых в работу тикетов немного, но чтение очереди — не место для полного
+    обхода таблицы.
+    ⚠️ Закрытие НЕ запирает человека: следующее его сообщение заводит новый тикет, и
+    переписка остаётся на месте.
+    """
+    from datetime import datetime, timedelta, timezone
+    edge = (datetime.now(timezone.utc) - timedelta(days=SUPPORT_AUTOCLOSE_DAYS)).isoformat()
+    rows = (db.query(SupportTicket)
+            .filter(SupportTicket.status == "in_review",
+                    SupportTicket.claimed_at != "")
+            .limit(_AUTOCLOSE_SCAN_LIMIT).all())
+    closed = 0
+    for r in rows:
+        # Последнее слово за модерацией? Сравниваем метку человека с ПОСЛЕДНИМ ОТВЕТОМ,
+        # и только с ним. Сравнение с моментом ВЗЯТИЯ здесь стояло и было дефектом
+        # (нашёл Полковник): `claimed_at` после взятия не двигается, а `claim` сам пишет
+        # в чат приветствие — значит человек почти всегда отвечает ПОЗЖЕ взятия, условие
+        # становится истинным навсегда, и разобранный тикет висит вечно. То есть
+        # автозакрытие не срабатывало ровно в том случае, ради которого написано.
+        last_reply = (db.query(Message)
+                      .filter(Message.conversation_id == r.conversation_id,
+                              Message.sender_id != r.user_id,
+                              Message.sender_id != SYSTEM_SENDER_ID,
+                              Message.deleted_at == "")
+                      .order_by(Message.id.desc()).first())
+        if last_reply is None:
+            continue          # модерация ещё не ответила — это ЕЁ долг, а не молчание человека
+        said = last_reply.created_at or ""
+        if (r.last_user_at or "") > said:
+            continue          # человек написал после ответа и ждёт — очередь его не теряет
+        if said >= edge:
+            continue          # ответ свежий: молчание ещё ничего не значит
+        r.status = "resolved"
+        r.resolved_at = _now()
+        r.resolved_by = "auto"
+        r.resolution_note = "закрыт автоматически: %d суток без ответа" % SUPPORT_AUTOCLOSE_DAYS
+        closed += 1
+    if closed:
+        db.commit()
+    return closed
+
+
+def _ticket_out(db: Session, r) -> dict:
+    u = db.query(User).filter(User.id == r.user_id).first()
+    label = _category_label(r.category)
+    who = ""
+    if r.claimed_by:
+        m = db.query(User).filter(User.id == r.claimed_by).first()
+        who = moderator_display_name(m) if m else r.claimed_by
+    return {
+        "id": r.id,
+        "conversation_id": r.conversation_id,
+        "user_id": r.user_id,
+        "user_name": (u.full_name or u.name or u.login) if u else r.user_id,
+        "category": r.category,
+        "category_label": label,
+        "urgent": bool(r.urgent),
+        "status": r.status,
+        "created_at": r.created_at or "",
+        "claimed_by": who,
+        "claimed_at": r.claimed_at or "",
+        "resolved_at": r.resolved_at or "",
+        "resolution_note": r.resolution_note or "",
+        "last_user_at": r.last_user_at or "",
+    }
+
+
+@mod_router.get("/support")
+def mod_support_queue(status: str = Query("open"), admin: User = Depends(require_moderation),
+                      db: Session = Depends(get_db)):
+    """Очередь обращений. СРОЧНЫЕ — В САМОМ ВЕРХУ.
+
+    ⚠️ Порядок задаётся ЗДЕСЬ, на сервере, а не сортировкой на клиенте: очередь читают
+    три разных экрана, и «срочное наверху» обязано означать одно и то же на всех.
+    ⚠️ status='' — все; по умолчанию открытые и взятые в работу, то есть то, что требует
+    внимания прямо сейчас.
+    """
+    _autoclose_stale(db)
+    q = db.query(SupportTicket)
+    if status == "open":
+        q = q.filter(SupportTicket.status.in_(("open", "in_review")))
+    elif status:
+        q = q.filter(SupportTicket.status == status)
+    rows = q.limit(500).all()
+    out = [_ticket_out(db, r) for r in rows]
+    # Срочные выше всех, дальше — кто дольше ждёт. `created_at` по возрастанию: обращение
+    # недельной давности обязано быть выше сегодняшнего, иначе очередь обслуживает
+    # последних пришедших, а первые не дожидаются вовсе.
+    out.sort(key=lambda x: (0 if x["urgent"] else 1, x["created_at"] or ""))
+    return {"tickets": out, "categories": SUPPORT_CATEGORIES}
+
+
+@mod_router.post("/support/{tid}/claim")
+def mod_support_claim(tid: int, request: Request = None,
+                      admin: User = Depends(require_moderation), db: Session = Depends(get_db)):
+    """Модератор берёт обращение и ПРЕДСТАВЛЯЕТСЯ в чате своим номером.
+
+    🔑 Приветствие пишется автоматически и от лица модератора, потому что до этого
+    момента человек разговаривал с роботом. Реплика «здравствуйте, я модератор №7» — это
+    момент, когда обращение перестаёт быть анкетой и становится разговором; заставлять
+    модератора набирать её руками значит получить чат, где он молча начинает с вопроса.
+
+    ⚠️ Повторный вызов НЕ здоровается второй раз и не отбирает тикет у того, кто уже его
+    взял: иначе два модератора по очереди представлялись бы одному человеку.
+    """
+    r = db.get(SupportTicket, tid)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    if r.status == "resolved":
+        raise HTTPException(status_code=409, detail="Обращение уже закрыто")
+    if r.claimed_by and r.claimed_by != admin.id:
+        other = db.query(User).filter(User.id == r.claimed_by).first()
+        raise HTTPException(status_code=409, detail="Обращение уже ведёт %s"
+                            % (moderator_display_name(other) if other else "другой модератор"))
+    first_time = not r.claimed_by
+    r.claimed_by = admin.id
+    r.claimed_at = r.claimed_at or _now()
+    r.status = "in_review"
+    db.commit()
+    if first_time:
+        m = Message(conversation_id=r.conversation_id, sender_id=admin.id,
+                    body="Здравствуйте, я %s. Чем могу помочь?" % moderator_display_name(admin),
+                    created_at=_now())
+        db.add(m)
+        db.commit()
+        _broadcast(db, r.conversation_id)
+    audit.log(db, request, actor=admin.login, role=admin.role,
+              action="support.claim", target=str(tid))
+    return {"ok": True, "ticket": _ticket_out(db, r)}
+
+
+@mod_router.post("/support/{tid}/resolve")
+def mod_support_resolve(tid: int, payload: dict = Body(default={}), request: Request = None,
+                        admin: User = Depends(require_moderation), db: Session = Depends(get_db)):
+    """Закрыть обращение. Человеку в чат уходит понятная строка о том, что тикет закрыт.
+
+    ⚠️ Молчаливое закрытие — худший вариант: человек продолжает ждать ответа в чате,
+    который для модерации уже не существует. Это тот же урок, что «отказ заявки
+    ОБЪЯВЛЯЕТСЯ в беседе».
+    ⚠️ Переписку не трогаем и чат не закрываем: следующее сообщение заведёт новый тикет.
+    """
+    r = db.get(SupportTicket, tid)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    if r.status == "resolved":
+        return {"ok": True, "ticket": _ticket_out(db, r)}
+    note = (payload.get("note") or "").strip()
+    r.status = "resolved"
+    r.resolved_at = _now()
+    r.resolved_by = admin.id
+    r.resolution_note = note[:500]
+    db.commit()
+    tail = (" Причина: %s" % note) if note else ""
+    _post_system(db, r.conversation_id,
+                 "Обращение закрыто модерацией.%s Если вопрос остался — напишите здесь, "
+                 "и мы откроем новое." % tail)
+    audit.log(db, request, actor=admin.login, role=admin.role,
+              action="support.resolve", target=str(tid), detail=note)
+    return {"ok": True, "ticket": _ticket_out(db, r)}
+
+
 @mod_router.get("/reports")
 def mod_reports(status: str = Query("open"), admin: User = Depends(require_moderation),
                 db: Session = Depends(get_db)):
@@ -127,7 +520,7 @@ def _inbox_state(db: Session, conv) -> dict:
     сверять роль автора нельзя — в `mod:{id}` пишет и админ, и модератор, а роль у них
     разная; сверять список модераторов значило бы держать его второй копией здесь."""
     last = (db.query(Message)
-            .filter(Message.conversation_id == conv.id, Message.deleted_at.is_(None))
+            .filter(Message.conversation_id == conv.id, Message.deleted_at == "")
             .order_by(Message.id.desc()).first())
     if last is None:
         return {"last_at": conv.created_at or "", "last_body": "", "last_from": "", "fresh": 0}
@@ -143,11 +536,11 @@ def _inbox_state(db: Session, conv) -> dict:
         last_reply = (db.query(Message)
                       .filter(Message.conversation_id == conv.id,
                               Message.sender_id != owner,
-                              Message.deleted_at.is_(None))
+                              Message.deleted_at == "")
                       .order_by(Message.id.desc()).first())
         q = db.query(Message).filter(Message.conversation_id == conv.id,
                                      Message.sender_id == owner,
-                                     Message.deleted_at.is_(None))
+                                     Message.deleted_at == "")
         if last_reply is not None:
             q = q.filter(Message.id > last_reply.id)
         fresh = q.count()

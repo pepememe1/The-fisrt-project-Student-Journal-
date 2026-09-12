@@ -16,7 +16,7 @@ from ..deps import (ensure_device_allowed, get_current_user, is_web_client,
                     device_barrier_applies)
 from ..models import User, AuthSession, set_user_password
 from ..schemas import LoginIn, TokenOut, BootstrapIn, RefreshIn
-from ..security import verify_password, create_token_full, decode_token
+from ..security import MIN_PASSWORD_LEN, verify_password, create_token_full, decode_token
 from ..config import issue_ttl_min, session_ttl_min
 from .. import throttle, events, audit, canary
 
@@ -97,8 +97,10 @@ def bootstrap_admin(body: BootstrapIn, request: Request, db: Session = Depends(g
     ).first()
     if exists:
         raise HTTPException(status_code=409, detail="Администратор уже создан")
-    if len(body.password) < 8:
-        raise HTTPException(status_code=400, detail="Пароль не короче 8 символов")
+    if len(body.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Пароль не короче {MIN_PASSWORD_LEN} символов")
     login = body.login.strip()
     #Детерминированный id (admin:<login>): когда десктоп позже пришлёт админа
     #через /sync, он обновит ЭТУ же строку, а не создаст дубликат.
@@ -754,11 +756,13 @@ def recover_confirm(body: dict = Body(...), request: Request = None,
     password = body.get("password") or ""
     if not token:
         raise HTTPException(status_code=400, detail="Ссылка неполная.")
-    #Требование то же, что при создании администратора, — восемь символов. Строже здесь
-    #быть нельзя: человек и так пришёл сюда потому, что не может войти, и отказ по правилу,
-    #которого нет больше нигде в продукте, отправил бы его по кругу.
-    if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Пароль не короче 8 символов")
+    #Требование то же, что при создании администратора, и берётся ИЗ ОДНОГО МЕСТА
+    #(`security.MIN_PASSWORD_LEN`). Строже здесь быть нельзя: человек и так пришёл сюда
+    #потому, что не может войти, и отказ по правилу, которого нет больше нигде в продукте,
+    #отправил бы его по кругу.
+    if len(password) < MIN_PASSWORD_LEN:
+        raise HTTPException(status_code=400,
+                            detail=f"Пароль не короче {MIN_PASSWORD_LEN} символов")
 
     row = db.query(PasswordReset).filter(PasswordReset.token == token).first()
     now = datetime.now(timezone.utc)

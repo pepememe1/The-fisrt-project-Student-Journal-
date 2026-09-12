@@ -23,7 +23,7 @@ import {
   Home, ClipboardList, ClipboardCheck, CalendarDays, BarChart3, Bot,
   BookOpen, Users, GraduationCap, Boxes, Library, Server,
   MonitorSmartphone, Activity, LayoutDashboard, UserPlus,
-  AlertTriangle, MessagesSquare, ShieldAlert, UsersRound, Database,
+  AlertTriangle, MessagesSquare, ShieldAlert, ShieldCheck, UsersRound, Database,
   Archive, BookMarked, ScrollText, Cpu, KeyRound, Inbox, PackageOpen } from '@lucide/vue'
 
 export const NAV = {
@@ -79,6 +79,7 @@ export const NAV = {
     { key: 'teachers', label: 'Преподаватели', i18n: 'nav.teachers', icon: GraduationCap, to: '/admin/teachers' },
     { key: 'students', label: 'Студенты', i18n: 'nav.students', icon: Users, to: '/admin/students' },
     { key: 'parents', label: 'Родители', i18n: 'nav.parents', icon: UsersRound, to: '/admin/parents' },
+    { key: 'moderators', label: 'Модераторы', i18n: 'nav.moderators', icon: ShieldCheck, to: '/admin/moderators' },
     { key: 'registrations', label: 'Заявки на регистрацию', i18n: 'nav.registrations', icon: UserPlus, to: '/admin/registrations' },
     { key: 'groups', label: 'Группы', i18n: 'nav.groups', icon: Boxes, to: '/admin/groups' },
     { key: 'subjects', label: 'Предметы', i18n: 'nav.subjects', icon: Library, to: '/admin/subjects' },

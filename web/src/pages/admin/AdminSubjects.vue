@@ -10,6 +10,7 @@
 // каталоге» и кнопкой массового импорта отсутствующих (по аналогии с «Все (N)» у
 // импорта групп категории).
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { adminApi, scheduleApi } from '@/api/endpoints'
 import AppButton from '@/components/ui/AppButton.vue'
 import { useToast } from '@/composables/useToast'
@@ -175,7 +176,7 @@ async function importPicked(all = false) {
       <AppButton variant="green" size="sm" @click="openCreate">{{ locale.t('adminSubjects.addAction', '+ Добавить') }}</AppButton>
     </div>
 
-    <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -209,7 +210,7 @@ async function importPicked(all = false) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <div v-if="showForm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showForm = false">
       <div class="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-card">

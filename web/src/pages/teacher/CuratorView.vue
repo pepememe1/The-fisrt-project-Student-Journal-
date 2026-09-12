@@ -4,6 +4,7 @@
 // ТОЛЬКО НА ЧТЕНИЕ: группа → предмет → студенты с оценками и средним. Данные — из
 // role-scoped /web/curator/* (сервер проверяет group ∈ curated_groups).
 import { ref, computed, watch, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { curatorApi, adminApi } from '@/api/endpoints'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import RiskBadge from '@/components/ui/RiskBadge.vue'
@@ -371,7 +372,7 @@ async function exportReport(fmt) {
         <p v-else-if="loading" class="text-sm text-text3">{{ locale.t('common.loading') }}</p>
         <EmptyState v-else-if="!data?.students?.length" :title="locale.t('curatorView.noStudentsTitle', 'Нет студентов')" :message="locale.t('curatorView.noStudentsMessage', { group })" />
 
-        <div v-else class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+        <StickyXScroll v-else class="rounded-lg border border-border bg-card shadow-card">
           <table class="w-max text-sm">
             <thead>
               <tr class="border-b-2 border-accent bg-bg2 text-text2">
@@ -397,7 +398,7 @@ async function exportReport(fmt) {
               </tr>
             </tbody>
           </table>
-        </div>
+        </StickyXScroll>
       </template>
 
       <!-- Риск отчисления по всей группе (3.6, dropout_risk.py) -->
@@ -445,7 +446,7 @@ async function exportReport(fmt) {
         <EmptyState v-else-if="!zetReport?.students?.length" :title="locale.t('curatorView.zetEmptyTitle', 'Пока пусто')"
                     :message="locale.t('curatorView.zetEmptyMessage', 'Ни один предмет группы ещё не получил ЗЕТ от администратора.')" />
 
-        <div v-else class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+        <StickyXScroll v-else class="rounded-lg border border-border bg-card shadow-card">
           <div class="flex items-center justify-between border-b border-border px-4 py-2">
             <div class="flex gap-3 text-xs">
               <button class="text-accent hover:underline" @click="toggleSelectAllEligible(true)">{{ locale.t('curatorView.selectEligible', 'выбрать готовых') }}</button>
@@ -491,7 +492,7 @@ async function exportReport(fmt) {
               </tr>
             </tbody>
           </table>
-        </div>
+        </StickyXScroll>
       </template>
 
       <!-- Подгруппы (§ролей, 3.6.1): куратор отмечает, кто в 1-й, кто во 2-й. -->

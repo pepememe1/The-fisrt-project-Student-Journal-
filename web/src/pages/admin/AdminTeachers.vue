@@ -3,6 +3,7 @@
 // = список предметов, пароль) / удаление. id на сервере = teach:login (как в синке
 // десктопа); удаление мягкое → изменения доезжают до десктопа обычным pull.
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { RotateCw, Copy } from '@lucide/vue'
 import { adminApi, scheduleApi } from '@/api/endpoints'
 import { generatePassword } from '@/utils/passwordGen'
@@ -155,7 +156,7 @@ async function del(t) {
       <AppButton variant="green" size="sm" @click="openCreate">{{ locale.t('adminTeachers.addAction', '+ Добавить') }}</AppButton>
     </div>
 
-    <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -192,7 +193,7 @@ async function del(t) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <div v-if="showForm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showForm = false">
       <div class="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-card">

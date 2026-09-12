@@ -226,6 +226,7 @@ def init_db():
     _ensure_audit_chain_columns()
     _ensure_conversation_avatar_column()
     _ensure_muted_user_term_columns()
+    _ensure_user_mod_number_column()
     _ensure_hot_path_indexes()
     _migrate_slash_in_ids()
     _refresh_query_planner_stats()
@@ -416,6 +417,31 @@ def _ensure_muted_user_term_columns():
         for name in add:
             conn.execute(text(f"ALTER TABLE muted_users ADD COLUMN {name} VARCHAR DEFAULT ''"))
     print("[db] muted_users: добавлены колонки %s" % ", ".join(add))
+
+
+def _ensure_user_mod_number_column():
+    """Идемпотентная мини-миграция: users.mod_number (публичный номер модератора).
+
+    Таблица `users` на бою существует с первого дня и полна людей, а `create_all` новые
+    СТОЛБЦЫ в существующую таблицу не добавляет НИКОГДА. В свежей тестовой базе ветка
+    «колонки не было» не исполняется вовсе — зелёные тесты сами по себе здесь не значат
+    ничего; регрессия на СТАРОЙ схеме живёт в `server/tests/test_db_migrations.py`.
+
+    ⚠️ Умолчание 0 = «номера нет», и это верно для всех, кто не модератор. Раздавать
+    номера задним числом здесь нельзя: миграция не знает, кто из уже заведённых людей
+    модератор по решению админа, а кто попал в роль опечаткой синка.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    try:
+        columns = {c["name"] for c in insp.get_columns("users")}
+    except Exception:
+        return
+    if "mod_number" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN mod_number INTEGER DEFAULT 0"))
+    print("[db] users: добавлена колонка mod_number")
 
 
 def _ensure_audit_chain_columns():

@@ -276,14 +276,20 @@ def test_moderation_chat_user_and_admin_reply(client):
     conv = client.get("/web/messenger/moderation", headers=b).json()["conversation_id"]
     client.post(f"/web/messenger/chats/{conv}/messages", json={"body": "помогите"}, headers=b)
     #Админ читает беседу и отвечает — видит ФИО автора (иначе не понять, кто писал).
+    #
+    #⚠️ Проверяем СВОЙСТВО, а не полный список: с 12.09.2026 в эту беседу пишет ещё и
+    #автоответчик обращений (`on_moderation_message`), и сверка списка целиком краснела бы
+    #на законной правке продукта, подталкивая «просто обновить ожидание».
     msgs = client.get(f"/web/admin/messenger/conversations/{conv}/messages", headers=admin).json()["messages"]
-    assert [x["body"] for x in msgs] == ["помогите"]
-    assert msgs[0]["sender_name"] == "Боб Бобов"
+    mine = [x for x in msgs if x["body"] == "помогите"]
+    assert len(mine) == 1, [x["body"] for x in msgs]
+    assert mine[0]["sender_name"] == "Боб Бобов"
     assert client.post(f"/web/admin/messenger/conversations/{conv}/reply",
                        json={"body": "разберёмся"}, headers=admin).status_code == 200
-    #Пользователь видит ответ модерации в своём чате.
-    msgs = client.get(f"/web/messenger/chats/{conv}/messages", headers=b).json()["messages"]
-    assert [x["body"] for x in msgs] == ["помогите", "разберёмся"]
+    #Пользователь видит ответ модерации в своём чате, и он идёт ПОСЛЕ его обращения.
+    bodies = [x["body"] for x in client.get(f"/web/messenger/chats/{conv}/messages", headers=b).json()["messages"]]
+    assert "помогите" in bodies and "разберёмся" in bodies, bodies
+    assert bodies.index("разберёмся") > bodies.index("помогите"), bodies
 
 
 def test_report_queue_and_resolve(client):

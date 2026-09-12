@@ -38,7 +38,7 @@ from ...models import (
     ConversationRole,
     CuratorReport, Group, Message, MessageHidden,
     BlockedUser, MessageReport, MessageReaction, MessageEdit, MessageTemplate,
-    MutedUser, UserReport,
+    MutedUser, UserReport, SupportTicket, next_moderator_number,
     NotifyEvent, ParentLink, SubjectHours,
     UserStatus, User, UserNote, direct_conversation_id,
 )
@@ -672,8 +672,32 @@ def _names_for(db: Session, sender_ids) -> dict:
         ids = ids - {"system"}
     if ids:
         rows = db.query(User).filter(User.id.in_(ids)).all()
-        out.update({u.id: (u.full_name or u.name or u.login or u.id) for u in rows})
+        out.update({u.id: moderator_display_name(u) for u in rows})
     return out
+
+
+def moderator_display_name(u) -> str:
+    """Как человека подписывают в переписке.
+
+    🔢 МОДЕРАТОР ВИДЕН НОМЕРОМ, А НЕ ФАМИЛИЕЙ (12.09.2026, требование Влада). Он
+    разбирает конфликты, и получивший ограничение не должен уносить из чата фамилию
+    того, кто его выдал: иначе разговор продолжится в коридоре, а не в тикете. Кто стоит
+    за номером, видит ТОЛЬКО администратор — на своей странице модераторов.
+
+    ⚠️ Правило живёт ОДНОЙ функцией и зовётся из `_names_for`, через которую проходит
+    вся подпись сообщений. Повтори мы условие у каждого потребителя (лента, список
+    чатов, «кто прочитал», поиск, модерация) — первое забытое место показало бы фамилию,
+    и заметить это можно было бы только глазами, в чужой переписке.
+    ⚠️ Номер пустой (0) — подписываем как обычно: человек мог получить роль синком со
+    старой сборки, и «Модератор №0» выглядел бы поломкой.
+    """
+    if getattr(u, "role", "") == "moderator" and getattr(u, "mod_number", 0):
+        return "Модератор №%d" % int(u.mod_number)
+    return u.full_name or u.name or u.login or u.id
+
+
+#Номер живёт в `models.next_moderator_number`: его зовут админка, консольный скрипт и
+#эта подпись — три места, и вторая копия разошлась бы молча.
 
 
 #Отправитель служебных постов (ответы Вектора, системные каналы). Не настоящий User —

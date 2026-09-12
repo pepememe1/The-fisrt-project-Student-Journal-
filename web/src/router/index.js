@@ -198,6 +198,10 @@ export const routes = [
     children: [
       { path: '', component: AdminDashboard, meta: { title: 'Панель администратора', i18nTitle: 'router.adminDashboardTitle' } },
       page('teachers', AdminTeachers, 'Преподаватели', 'nav.teachers'),
+      //Учётные записи модераторов — рядом с остальными людьми, а не в «Общении»: админ
+      //ищет их там, где заводит доступ, а не там, где читает жалобы.
+      page('moderators', () => import('@/pages/admin/AdminModerators.vue'),
+           'Модераторы', 'nav.moderators'),
       page('students', AdminStudents, 'Студенты', 'nav.students'),
       page('parents', AdminParents, 'Родители', 'nav.parents'),
       page('registrations', AdminRegistrations, 'Заявки на регистрацию', 'nav.registrations'),

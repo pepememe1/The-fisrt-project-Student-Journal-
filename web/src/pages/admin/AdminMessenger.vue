@@ -6,7 +6,8 @@
 //   • «Жалобы» — тикеты на конкретное СООБЩЕНИЕ со снимком текста;
 //   • «Профили» — тикеты на ПРОФИЛЬ (имя, «о себе», аватарка). Отдельная очередь, а не
 //     фильтр: разбор начинается с другого и заканчивается другими действиями;
-//   • «Обращения» — чаты поддержки (кнопка ⚙ у пользователя) + ответ модерации;
+//   • «Обращения» — ОЧЕРЕДЬ ТИКЕТОВ поддержки (кнопка ⚙ у пользователя): срочные сверху,
+//     «взять в работу» и «закрыть» + ответ модерации прямо в переписке;
 //   • «Люди» — те, НА КОГО ЕСТЬ ЖАЛОБА. Не каталог колледжа: полный список модератору не
 //     нужен ни для одной задачи, и сервер его не отдаёт (см. mod_users).
 //
@@ -81,17 +82,85 @@ async function load() {
   finally { loading.value = false }
 }
 
-async function loadInbox() {
-  loadingConvs.value = true
-  try { convs.value = (await messengerModApi.conversations('', 'moderation')).data.conversations || [] }
-  catch { convs.value = [] }
-  finally { loadingConvs.value = false }
-}
-
 // ⚠️ «Не удалось загрузить» и «ничего нет» — РАЗНЫЕ сообщения. Показав пустоту при сбое
 // сети, мы говорим модератору «всё чисто»: он закроет вкладку, а жалобы останутся
 // неразобранными. Отказ, выглядящий как хорошая новость, — худший вид тихого отказа.
 const loadError = ref('')
+
+// ── Очередь обращений: ТИКЕТЫ, а поверх них — чаты ──────────────────────────────────
+//
+// 🔑 ОЧЕРЕДЬ ОДНА, И ПОРЯДОК В НЕЙ ЗАДАЁТ СЕРВЕР. Срочные (кнопка «Позвать человека» и
+// тема «Другое») стоят в самом верху; клиент список НЕ пересортировывает — очередь читают
+// разные экраны, и «срочное наверху» обязано означать на всех одно и то же.
+//
+// ⚠️ Чаты обращений БЕЗ действующего тикета показываются следом, а не выбрасываются.
+// Тикеты появились 12.09.2026: у переписок, заведённых раньше, их нет вовсе, и очередь,
+// показывающая только тикеты, молча спрятала бы эти обращения — тот самый тихий отказ,
+// против которого очередь и заведена.
+const tickets = ref([])
+const ticketBusy = ref(0)
+
+async function loadInbox() {
+  loadingConvs.value = true
+  loadError.value = ''
+  try {
+    const [t, c] = await Promise.all([
+      messengerModApi.support('open'),
+      messengerModApi.conversations('', 'moderation'),
+    ])
+    tickets.value = t.data.tickets || []
+    convs.value = c.data.conversations || []
+  } catch {
+    tickets.value = []
+    convs.value = []
+    loadError.value = locale.t('adminMessenger.loadFailed', 'Не удалось загрузить.')
+  } finally { loadingConvs.value = false }
+}
+
+// Строка очереди = тикет + переписка, из которой он вырос. Собеседника (имя, аватарка,
+// признак мьюта) знает только список бесед, поэтому склеиваем их здесь, а не на сервере:
+// иначе очередь тикетов повторила бы у себя половину сборки карточки пользователя.
+const inboxRows = computed(() => {
+  const byId = new Map(convs.value.map((c) => [c.conversation_id, c]))
+  const rows = tickets.value.map((t) => ({
+    key: `t${t.id}`, ticket: t, conv: byId.get(t.conversation_id) || null,
+    convId: t.conversation_id,
+  }))
+  const covered = new Set(tickets.value.map((t) => t.conversation_id))
+  for (const c of convs.value) {
+    if (covered.has(c.conversation_id)) continue
+    rows.push({ key: `c${c.conversation_id}`, ticket: null, conv: c, convId: c.conversation_id })
+  }
+  return rows
+})
+
+function rowPerson(row) { return row.conv?.people?.[0] || null }
+
+// Взять обращение: сервер подключает модератора к чату и представляет его НОМЕРОМ. Сразу
+// открываем переписку — иначе «взял» и «прочитал» становятся двумя отдельными действиями,
+// а поздоровался он уже в первом.
+async function claimTicket(t) {
+  ticketBusy.value = t.id
+  try {
+    await messengerModApi.claimSupport(t.id)
+    await loadInbox()
+    await openConversation(t.conversation_id, 'inbox')
+  } catch (e) {
+    window.alert(e?.response?.data?.detail || locale.t('common.error', 'Не получилось'))
+  } finally { ticketBusy.value = 0 }
+}
+
+// Закрыть обращение. Причина необязательна, но уходит человеку в чат: молчаливое закрытие
+// оставляет его ждать ответа в переписке, которой для модерации уже не существует.
+async function resolveTicket(t) {
+  const note = window.prompt(locale.t('adminMessenger.resolveNotePrompt',
+    'Что написать человеку при закрытии (необязательно):'))
+  if (note === null) return
+  ticketBusy.value = t.id
+  try { await messengerModApi.resolveSupport(t.id, note.trim()); await loadInbox() }
+  catch (e) { window.alert(e?.response?.data?.detail || locale.t('common.error', 'Не получилось')) }
+  finally { ticketBusy.value = 0 }
+}
 
 async function loadUserReports() {
   loadingUserReports.value = true
@@ -396,29 +465,70 @@ function fmt(iso) {
         <button type="button" @click="loadInbox" class="rounded-md border border-border2 px-3 py-1.5 text-sm text-text2 hover:bg-bg2">{{ locale.t('common.refresh') }}</button>
       </div>
       <p v-if="loadingConvs" class="text-sm text-text3">{{ locale.t('common.loading') }}</p>
-      <p v-else-if="!convs.length" class="rounded-lg border border-dashed border-border2 bg-card2/50 px-6 py-12 text-center text-sm text-text3">
+      <p v-else-if="loadError" class="rounded-xl border border-red/40 bg-red/10 p-6 text-center text-sm text-red">
+        {{ loadError }}
+      </p>
+      <p v-else-if="!inboxRows.length" class="rounded-lg border border-dashed border-border2 bg-card2/50 px-6 py-12 text-center text-sm text-text3">
         {{ locale.t('adminMessenger.noInbox', 'Обращений в поддержку нет.') }}
       </p>
       <div class="space-y-2">
-        <div v-for="c in convs" :key="c.conversation_id"
-             class="flex items-center gap-3 rounded-lg border border-border bg-card p-3 shadow-card">
-          <button type="button" @click="openConversation(c.conversation_id, 'inbox')"
-                  class="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80">
-            <Avatar :src="c.people?.[0]?.avatar" :name="c.people?.[0]?.full_name || (c.participants || []).join(', ')"
-                    :role="c.people?.[0]?.role" :color="profilePlate(c.people?.[0]?.profile_color)" :size="40" />
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-semibold text-text">{{ c.people?.[0]?.full_name || (c.participants || []).join(', ') || locale.t('adminMessenger.unknownUser', 'Пользователь') }}</div>
-              <div class="truncate text-xs text-text3">{{ userMeta(c.people?.[0]) || locale.t('adminMessenger.supportRequestFallback', 'Обращение в поддержку') }}</div>
-            </div>
-          </button>
-          <!-- Ограничение обратившегося. Тикета здесь нет (это чат поддержки, а не
-               жалоба), поэтому и гасить нечего: наказание выдаётся по существу разговора. -->
-          <button v-if="c.people?.[0] && c.people[0].role !== 'admin'" type="button"
-                  @click="c.people[0].muted ? unmute(c.people[0]) : openMute(c.people[0])"
-                  class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-semibold"
-                  :class="c.people[0].muted ? 'border-border2 text-text2 hover:bg-bg2' : 'border-red/40 text-red hover:bg-red/10'">
-            {{ c.people[0].muted ? locale.t('adminMessenger.unmuteShort', 'Снять') : locale.t('adminMessenger.muteShort', 'Ограничить') }}
-          </button>
+        <!-- ⚠️ Порядок строк задан СЕРВЕРОМ (срочные сверху, дальше кто дольше ждёт) и
+             здесь НЕ пересортировывается: очередь читают разные экраны. -->
+        <div v-for="row in inboxRows" :key="row.key"
+             class="rounded-lg border bg-card p-3 shadow-card"
+             :class="row.ticket?.urgent ? 'border-red/50 ring-1 ring-red/20' : 'border-border'">
+          <div class="flex items-center gap-3">
+            <button type="button" @click="openConversation(row.convId, 'inbox')"
+                    class="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80">
+              <Avatar :src="rowPerson(row)?.avatar"
+                      :name="rowPerson(row)?.full_name || row.ticket?.user_name || (row.conv?.participants || []).join(', ')"
+                      :role="rowPerson(row)?.role" :color="profilePlate(rowPerson(row)?.profile_color)" :size="40" />
+              <div class="min-w-0 flex-1">
+                <div class="flex min-w-0 items-center gap-1.5">
+                  <!-- Срочное обращение обязано быть видно ДО чтения строки: «Позвать
+                       человека» и «Другое» — это случаи, которые наш список тем уже не
+                       описывает, и ждать они не должны. -->
+                  <span v-if="row.ticket?.urgent"
+                        class="shrink-0 rounded-full bg-red px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                    {{ locale.t('support.urgent', 'срочно') }}
+                  </span>
+                  <span class="truncate text-sm font-semibold text-text">
+                    {{ rowPerson(row)?.full_name || row.ticket?.user_name || (row.conv?.participants || []).join(', ') || locale.t('adminMessenger.unknownUser', 'Пользователь') }}
+                  </span>
+                  <span v-if="row.conv?.fresh" class="shrink-0 rounded-full bg-accent px-1.5 text-[11px] font-semibold text-white">{{ row.conv.fresh }}</span>
+                </div>
+                <div class="truncate text-xs text-text3">
+                  <template v-if="row.ticket">
+                    {{ row.ticket.category_label }}
+                    <span v-if="row.ticket.claimed_by"> · {{ locale.t('support.takenBy', 'ведёт') }} {{ row.ticket.claimed_by }}</span>
+                  </template>
+                  <template v-else>{{ userMeta(rowPerson(row)) || locale.t('adminMessenger.supportRequestFallback', 'Обращение в поддержку') }}</template>
+                </div>
+              </div>
+            </button>
+            <!-- Ограничение обратившегося: наказание выдаётся по существу разговора. -->
+            <button v-if="rowPerson(row) && rowPerson(row).role !== 'admin'" type="button"
+                    @click="rowPerson(row).muted ? unmute(rowPerson(row)) : openMute(rowPerson(row))"
+                    class="shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-semibold"
+                    :class="rowPerson(row).muted ? 'border-border2 text-text2 hover:bg-bg2' : 'border-red/40 text-red hover:bg-red/10'">
+              {{ rowPerson(row).muted ? locale.t('adminMessenger.unmuteShort', 'Снять') : locale.t('adminMessenger.muteShort', 'Ограничить') }}
+            </button>
+          </div>
+          <!-- Взять в работу / закрыть. Кнопки есть только у тикетов: у переписки без
+               тикета брать и закрывать нечего, и рисовать их неработающими значило бы
+               обещать действие, которого не будет. -->
+          <div v-if="row.ticket" class="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+            <button type="button" :disabled="ticketBusy === row.ticket.id || !!row.ticket.claimed_by"
+                    @click="claimTicket(row.ticket)"
+                    class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent2 disabled:opacity-50">
+              {{ row.ticket.claimed_by ? locale.t('support.inWork', 'В работе') : locale.t('support.claim', 'Взять в работу') }}
+            </button>
+            <button type="button" :disabled="ticketBusy === row.ticket.id" @click="resolveTicket(row.ticket)"
+                    class="rounded-md border border-border2 px-3 py-1.5 text-xs font-semibold text-text2 hover:bg-bg2 disabled:opacity-50">
+              {{ locale.t('support.resolve', 'Закрыть обращение') }}
+            </button>
+            <span class="text-[11px] text-text3">{{ fmt(row.ticket.created_at) }}</span>
+          </div>
         </div>
       </div>
     </template>

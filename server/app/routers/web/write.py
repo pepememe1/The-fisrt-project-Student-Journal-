@@ -10,6 +10,9 @@ from ._common import *      # noqa: F401,F403 — общий router, модел�
 #Риск отчисления пересчитывается хвостом простановки оценки. Импорт односторонний
 #(curator НЕ импортирует write), поэтому цикла нет.
 from .curator import _maybe_notify_dropout_risk      # noqa: F401
+#Минимальная длина пароля живёт в ОДНОМ месте на весь продукт (см. её докстринг).
+from ...security import MIN_PASSWORD_LEN      # noqa: F401
+from ...models import next_moderator_number      # noqa: F401
 
 
 # ЗАПИСЬ (Phase B) ─────────────────────────────────────────────────────────────────
@@ -1739,6 +1742,155 @@ def admin_delete_teacher(login: str,
     row.updated_at = _now_iso()
     db.commit()
     audit.log(db, actor=_admin.login, role="admin", action="teacher.delete", target=login)
+    return {"ok": True, "login": login}
+
+
+# --- МОДЕРАТОРЫ (CRUD) -----------------------------------------------------------
+# id = `mod:{login}` — ТОТ ЖЕ формат, что у консольного `server/create_moderator.py`.
+# Разойдись они, и один человек завёлся бы ДВАЖДЫ разными строками, причём незаметно:
+# списка модераторов на виду до этого не было вовсе.
+#
+# 🔑 ДВЕРЬ ЗДЕСЬ — `require_admin`, И ЭТО НЕ ФОРМАЛЬНОСТЬ. Модератор не имеет права
+# заводить модераторов и перевыдавать пароли: иначе роль, созданная разбирать жалобы,
+# сама выписывает себе подкрепление и меняет пароль тому, кто её проверяет. Это та же
+# граница, ради которой заведена отдельная `deps.require_moderation`: тикеты и жалобы —
+# ему, учётные записи — администратору.
+#
+# ⚠️ Консольный скрипт НЕ УДАЛЁН и остаётся запасным путём: админка требует живого
+# администратора, а первый запуск на чистой машине бывает и без него.
+def _moderator_row(db: Session, login: str):
+    """Строка модератора по логину или None. Ищем ПО ЛОГИНУ, а не только по id: строка
+    могла быть заведена скриптом раньше, чем появился этот раздел."""
+    return (db.query(User)
+            .filter(User.login == login, User.role == "moderator",
+                    User.deleted == False)                      # noqa: E712
+            .first())
+
+
+@router.get("/admin/moderators")
+def admin_list_moderators(_admin: User = Depends(require_admin),
+                          db: Session = Depends(get_db)):
+    """Список модераторов. Пароли наружу не уходят НИКОГДА — только признак, задан ли он:
+    иначе страница администратора стала бы способом унести хеши на офлайн-перебор."""
+    rows = (db.query(User)
+            .filter(User.role == "moderator", User.deleted == False)   # noqa: E712
+            .order_by(User.login).all())
+    return {"moderators": [{
+        "login": r.login,
+        #Номер и соответствие «номер ↔ человек» видит ТОЛЬКО администратор: в переписке
+        #модератор подписан номером (см. `messenger/_common.moderator_display_name`).
+        "mod_number": int(r.mod_number or 0),
+        "full_name": r.full_name or r.name or "",
+        "has_password": bool(r.password_hash),
+        "password_set_at": r.password_set_at or "",
+    } for r in rows]}
+
+
+@router.post("/admin/moderators")
+def admin_create_moderator(payload: dict = Body(...),
+                           _admin: User = Depends(require_admin),
+                           db: Session = Depends(get_db)):
+    """Завести модератора. Пароль ОБЯЗАТЕЛЕН и приходит от администратора.
+
+    ⚠️ В отличие от преподавателя, учётная запись без пароля здесь не заводится. У
+    преподавателя это осмысленно (админ заводит нагрузку заранее, пароль выдаёт потом), а
+    модератор без пароля — строка, которая выглядит заведённой и не работает: человек
+    получит «неверный логин или пароль» и пойдёт искать поломку.
+    """
+    login = (payload.get("login") or "").strip()
+    full_name = (payload.get("full_name") or "").strip()
+    password = payload.get("password") or ""
+    if not login:
+        raise HTTPException(status_code=400, detail="Нужен логин")
+    if len(password) < MIN_PASSWORD_LEN:
+        raise HTTPException(status_code=400,
+                            detail=f"Пароль не короче {MIN_PASSWORD_LEN} символов")
+    #🔒 ЧУЖУЮ УЧЁТНУЮ ЗАПИСЬ В МОДЕРАТОРЫ НЕ ПЕРЕВОДИМ. Под тем же логином может жить
+    #преподаватель: смена роли отобрала бы у него журнал и выдала доступ к чужой
+    #переписке — одним нажатием и без единого предупреждения. Та же проверка стоит в
+    #консольном скрипте; разойдись они, и запрет обходился бы выбором двери.
+    taken = (db.query(User)
+             .filter(User.login == login, User.deleted == False)       # noqa: E712
+             .first())
+    if taken is not None and taken.role != "moderator":
+        raise HTTPException(status_code=409,
+                            detail=f"Логин занят ролью «{taken.role}» — выберите другой")
+    if taken is not None:
+        raise HTTPException(status_code=409, detail="Модератор с таким логином уже есть")
+    uid = f"mod:{login}"
+    row = db.get(User, uid)
+    if row is None:
+        row = User(id=uid)
+        db.add(row)
+    row.role = "moderator"
+    row.login = login
+    row.full_name = full_name
+    row.name = full_name
+    row.surname = ""
+    row.group_name = ""
+    row.subjects = []
+    row.curated_groups = []
+    row.group_assignments = {}
+    row.deleted = False
+    #🔢 Публичный номер: людям модератор известен как «Модератор №N», а кто за номером —
+    #видно только здесь, администратору. Выдаём при заведении и НЕ меняем потом: ссылка
+    #«мне отвечал модератор №7» обязана оставаться проверяемой.
+    if not row.mod_number:
+        row.mod_number = next_moderator_number(db)
+    set_user_password(row, password)
+    row.updated_at = _now_iso()
+    db.commit()
+    #Имена действий те же, что у консольного скрипта: два словаря в одном журнале
+    #означают, что поиск по нему находит половину случаев.
+    audit.log(db, actor=_admin.login, role="admin", action="user.moderator.create",
+              target=uid, detail=login)
+    return {"ok": True, "login": login}
+
+
+@router.put("/admin/moderators/{login}")
+def admin_update_moderator(login: str, payload: dict = Body(...),
+                           _admin: User = Depends(require_admin),
+                           db: Session = Depends(get_db)):
+    """Правка модератора: имя и СМЕНА ПАРОЛЯ.
+
+    ⚠️ ПУСТОЕ ПОЛЕ ПАРОЛЯ ЗНАЧИТ «НЕ МЕНЯТЬ», а не «стереть» — то же правило, что у
+    преподавателя и у ключа GigaChat. Страница пароль не показывает (и не может), поэтому
+    при правке одного имени поле придёт пустым; молчаливое стирание выбило бы человека из
+    продукта, а понять причину он не смог бы.
+    """
+    row = _moderator_row(db, login)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Модератор не найден")
+    if "full_name" in payload:
+        name = (payload.get("full_name") or "").strip()
+        row.full_name = name
+        row.name = name
+    password = payload.get("password") or ""
+    if password:
+        if len(password) < MIN_PASSWORD_LEN:
+            raise HTTPException(status_code=400,
+                                detail=f"Пароль не короче {MIN_PASSWORD_LEN} символов")
+        set_user_password(row, password)
+        audit.log(db, actor=_admin.login, role="admin", action="user.moderator.password",
+                  target=row.id, detail=login)
+    row.updated_at = _now_iso()
+    db.commit()
+    return {"ok": True, "login": login}
+
+
+@router.delete("/admin/moderators/{login}")
+def admin_delete_moderator(login: str, _admin: User = Depends(require_admin),
+                           db: Session = Depends(get_db)):
+    """Мягкое удаление (надгробие deleted=1) — как у преподавателя: удаление обязано
+    доехать до десктопа через pull, а не «воскреснуть» на следующем синке."""
+    row = _moderator_row(db, login)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Модератор не найден")
+    row.deleted = True
+    row.updated_at = _now_iso()
+    db.commit()
+    audit.log(db, actor=_admin.login, role="admin", action="user.moderator.delete",
+              target=row.id, detail=login)
     return {"ok": True, "login": login}
 
 

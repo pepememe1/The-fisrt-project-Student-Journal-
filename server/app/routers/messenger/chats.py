@@ -916,7 +916,7 @@ def mark_unread(conv_id: str, user: User = Depends(get_current_user),
     """
     part = _require_participant(db, conv_id, user)
     last = (db.query(Message).filter(Message.conversation_id == conv_id,
-                                     Message.deleted_at.is_(None))
+                                     Message.deleted_at == "")
             .order_by(Message.id.desc()).first())
     if last is None:
         return {"ok": True, "unread": 0}        #нечего помечать: беседа пуста
@@ -926,7 +926,7 @@ def mark_unread(conv_id: str, user: User = Depends(get_current_user),
     #нет — пустую строку, то есть «не читал ничего».
     prev = (db.query(Message).filter(Message.conversation_id == conv_id,
                                      Message.id < last.id,
-                                     Message.deleted_at.is_(None))
+                                     Message.deleted_at == "")
             .order_by(Message.id.desc()).first())
     part.last_read_at = (prev.created_at if prev else "")
     db.commit()

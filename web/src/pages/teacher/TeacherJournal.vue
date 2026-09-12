@@ -10,6 +10,7 @@
 //  • дата нового занятия — автоматически сегодняшняя.
 // Всё пишется в те же таблицы, что синк десктопа → изменения доезжают до ПК pull'ом.
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 // Положение ПКМ-меню считает общий модуль — тот же, что у меню сообщения в мессенджере.
 // Своя копия правила разошлась бы с ним на первой же правке (и уже разошлась: здесь
 // клампилась только горизонталь).
@@ -789,7 +790,7 @@ async function downloadVedomost(fmt) {
                 :message="locale.t('teacherJournal.emptyJournalMessage', 'Добавьте первое занятие кнопкой «+ Занятие» — колонки появятся здесь.')" />
 
     <!-- Таблица компактная и выровнена влево: обёртка не растягивает table (w-max). -->
-    <div v-else class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll v-else class="rounded-lg border border-border bg-card shadow-card">
       <!-- w-max (без min-w-full): таблица ровно по содержимому и прижата ВЛЕВО, не
            расползается к центру при 1–2 занятиях. -->
       <table class="w-max text-sm">
@@ -861,7 +862,7 @@ async function downloadVedomost(fmt) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <!-- ЛЕГЕНДА МЕТОК. Заведена в 3.7.6 вместе с переназначением «О» (было «уважительная
          причина», стало «опоздал»). Раньше смысл букв не был написан НИГДЕ в журнале —

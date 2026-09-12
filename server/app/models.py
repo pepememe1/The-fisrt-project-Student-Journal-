@@ -54,6 +54,17 @@ class User(Base):
     #пользователь через self-эндпоинт POST /me/prefs (роли/пароль не затрагиваются).
     #Уезжает клиентам обычным pull (как и прочие столбцы) — так тема «роумится».
     prefs = Column(JSON, default=dict)
+    #🔢 ПУБЛИЧНЫЙ НОМЕР МОДЕРАТОРА (12.09.2026, требование Влада). Людям модератор
+    #известен как «Модератор №7», а КТО за номером — видит только администратор на своей
+    #странице. Причина не в секретности ради секретности: модератор разбирает конфликты,
+    #и человек, получивший мьют, не должен уходить с фамилией того, кто его выдал, —
+    #иначе разговор продолжится в коридоре, а не в тикете.
+    #⚠️ Номер, а не имя, ещё и потому, что он НЕ МЕНЯЕТСЯ при смене ФИО: ссылка «мне
+    #отвечал модератор №7» остаётся проверяемой через полгода.
+    #⚠️ 0 = номера нет (все, кто не модератор). Колонка НОВАЯ в СУЩЕСТВУЮЩЕЙ таблице →
+    #идемпотентный ALTER в `db._ensure_user_mod_number_column`, иначе на бою её не будет
+    #и никто об этом не скажет.
+    mod_number = Column(Integer, default=0, index=True)
     updated_at = Column(String, default="", index=True)
     deleted = Column(Boolean, default=False)
 
@@ -217,6 +228,23 @@ def parent_link_id(parent_id: str, student_id: str) -> str:
     """Детерминированный ключ: повторная привязка тех же двоих ЗАМЕНЯЕТ запись, а не
     плодит вторую (иначе отозванная связь соседствовала бы с новой активной)."""
     return f"plink:{parent_id}|{student_id}"
+
+
+def next_moderator_number(db) -> int:
+    """Наименьший свободный публичный номер модератора, начиная с единицы.
+
+    ⚠️ НЕ `max+1`: номер удалённого освобождается, и без переиспользования счётчик рос бы
+    вместе с текучкой — «Модератор №137» в колледже на двух модераторов читается как
+    ошибка продукта. Дыр в нумерации при этом не возникает.
+    ⚠️ Считаем только ЖИВЫХ модераторов: у надгробия (deleted=1) номер остаётся в строке,
+    но занимать очередь он не должен.
+    """
+    used = {int(n or 0) for (n,) in db.query(User.mod_number)
+            .filter(User.role == "moderator", User.deleted == False).all()}   # noqa: E712
+    i = 1
+    while i in used:
+        i += 1
+    return i
 
 
 def set_user_password(row: "User", plain: str) -> None:
@@ -1144,6 +1172,44 @@ class MessageReport(Base):
     handled_by = Column(String, default="")
     handled_at = Column(String, default="")
     resolution_note = Column(String, default="")
+
+
+class SupportTicket(Base):
+    """Обращение в модерацию = ТИКЕТ (12.09.2026).
+
+    🔑 ТРЕТЬЯ ТАБЛИЦА, А НЕ ФЛАГ В `MessageReport`, и причина та же, по которой отдельно
+    живёт `UserReport`. У жалобы на сообщение есть `message_id` и снимок текста, у жалобы
+    на профиль — поле профиля и его снимок, а у обращения нет ни того, ни другого: у него
+    есть БЕСЕДА, категория, срочность и тот, кто взял его в работу. Сложив их в одну
+    таблицу, мы получили бы строку, где две трети колонок всегда пусты, и каждая выборка
+    очереди обязана была бы помнить, какая именно треть. Первая забывшая — это обращение,
+    показанное модератору без содержимого.
+
+    ⚠️ Беседа одна на человека (`mod:{user_id}`), а тикетов по ней МНОГО: закрытый тикет
+    не удаляет переписку, и следующее обращение заводит новый. Иначе история разбора
+    склеивалась бы в один бесконечный тикет, и «когда это закрыли» ответить было бы нечем.
+    ⚠️ Не в SYNC_MODELS — весь мессенджер и модерация серверные."""
+    __tablename__ = "support_tickets"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String, index=True, default="")
+    user_id = Column(String, index=True, default="")
+    #Категория из закрытого списка (`moderation.SUPPORT_CATEGORIES`).
+    category = Column(String, default="other")
+    #🔴 СРОЧНОСТЬ. Поднимают её два случая: человек выбрал «другое» (значит наш список
+    #его случай не описывает) и человек прямо попросил живого человека. И то и другое
+    #означает, что автоответчик больше не помогает, а мешает.
+    urgent = Column(Boolean, default=False, index=True)
+    status = Column(String, default="open", index=True)   #open | in_review | resolved
+    created_at = Column(String, default="", index=True)
+    #Кто взял в работу. Номер модератора не дублируем: он живёт у пользователя и меняться
+    #не должен — вторая копия разошлась бы молча.
+    claimed_by = Column(String, default="")
+    claimed_at = Column(String, default="")
+    resolved_at = Column(String, default="")
+    resolved_by = Column(String, default="")
+    resolution_note = Column(String, default="")
+    #Когда человек написал в последний раз — по нему считается «умное» закрытие.
+    last_user_at = Column(String, default="")
 
 
 class MutedUser(Base):

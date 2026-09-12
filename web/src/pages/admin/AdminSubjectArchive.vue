@@ -5,6 +5,7 @@
 // действующий план, и то, что последний реимпорт/правка плана только что вытеснили
 // (помечено «Архив» — строка SubjectHours погашена, см. write._archive_dropped_subjects).
 import { ref, computed, onMounted, watch } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { ChevronDown } from '@lucide/vue'
 import { adminApi, scheduleApi } from '@/api/endpoints'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -123,7 +124,7 @@ onMounted(async () => {
             <span class="ml-auto text-tiny text-text3">{{ locale.t('adminSubjectArchive.subjectsCount', { n: t.subjects.length }) }}</span>
             <ChevronDown class="size-4 shrink-0 text-text3 transition-transform" :class="isExpanded(t) ? 'rotate-180' : ''" />
           </button>
-          <div v-if="isExpanded(t)" class="overflow-x-auto">
+          <StickyXScroll v-if="isExpanded(t)">
             <table class="w-full text-sm">
               <thead>
                 <tr class="border-b border-border2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -148,7 +149,7 @@ onMounted(async () => {
                 </tr>
               </tbody>
             </table>
-          </div>
+          </StickyXScroll>
         </div>
       </div>
     </template>

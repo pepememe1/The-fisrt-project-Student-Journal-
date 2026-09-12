@@ -19,6 +19,7 @@
 // строкой-карточкой, где оценка стоит справа в ПЕРВОЙ строке, а таблица включается с
 // `sm`, где ширины на неё хватает.
 import { useLocaleStore } from '@/stores/locale'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 
 defineProps({
   lessons: { type: Array, default: () => [] },
@@ -74,7 +75,7 @@ function gradeChip(g) {
 
     <!-- ПЛАНШЕТ И ШИРЕ: привычная таблица. overflow-x оставлен на случай очень длинных
          тем — здесь он уже работает как задумано, а не прячет оценку. -->
-    <div class="hidden overflow-x-auto sm:block">
+    <StickyXScroll class="hidden sm:block">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -97,6 +98,6 @@ function gradeChip(g) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
   </template>
 </template>

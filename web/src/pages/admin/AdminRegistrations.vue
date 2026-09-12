@@ -4,6 +4,7 @@
 // Если письмо не ушло (SMTP не настроен) — сервер вернёт пароль, показываем его админу
 // для ручной передачи.
 import { ref, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { adminApi } from '@/api/endpoints'
 import AppButton from '@/components/ui/AppButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -58,7 +59,7 @@ async function reject(r) {
     <p v-if="loading" class="text-sm text-text3">{{ locale.t('common.loading') }}</p>
     <EmptyState v-else-if="!rows.length" :title="locale.t('adminRegistrations.noRequestsTitle', 'Заявок нет')" :message="locale.t('adminRegistrations.noRequestsMessage', 'Новые регистрации появятся здесь.')" />
 
-    <div v-else class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll v-else class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -84,7 +85,7 @@ async function reject(r) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <!-- Если письмо не ушло — показываем креды админу для ручной передачи -->
     <div v-if="issued" class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" @click.self="issued = null">

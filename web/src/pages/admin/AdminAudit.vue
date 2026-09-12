@@ -13,6 +13,7 @@
 // ⚠️ ТОЛЬКО ЧТЕНИЕ. Записи неизменяемы по смыслу: журнал, который можно поправить,
 // не журнал. Кнопок удаления и правки здесь нет и быть не должно.
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { RefreshCw, Search, ShieldAlert, ShieldCheck } from '@lucide/vue'
 import { adminApi } from '@/api/endpoints'
 import { useLocaleStore } from '@/stores/locale'
@@ -179,7 +180,7 @@ async function checkIntegrity() {
 
       <!-- ⚠️ Своя прокрутка у таблицы: без неё длинные значения (IP, устройство,
            подробности) утаскивают в горизонтальную прокрутку всю страницу. -->
-      <div v-else class="overflow-x-auto">
+      <StickyXScroll v-else>
         <table class="w-full text-left text-xs">
           <thead class="text-text3">
             <tr class="border-b border-border">
@@ -208,7 +209,7 @@ async function checkIntegrity() {
             </tr>
           </tbody>
         </table>
-      </div>
+      </StickyXScroll>
     </Card>
   </div>
 </template>

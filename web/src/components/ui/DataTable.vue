@@ -3,6 +3,7 @@
 // columns: [{ key, label, align?: 'right' }]; rows: массив объектов. Ячейку можно
 // переопределить слотом cell-<key> (передаётся { row, value }).
 import { useLocaleStore } from '@/stores/locale'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 const locale = useLocaleStore()
 defineProps({
   columns: { type: Array, required: true },
@@ -13,7 +14,7 @@ defineProps({
 </script>
 
 <template>
-  <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+  <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
     <table class="w-full text-sm">
       <thead>
         <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -32,5 +33,5 @@ defineProps({
         </tr>
       </tbody>
     </table>
-  </div>
+  </StickyXScroll>
 </template>

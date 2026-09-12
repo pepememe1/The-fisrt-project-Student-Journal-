@@ -9,6 +9,7 @@
 // студент не подтвердит её у себя, статус «ожидает». Об этом написано прямо на странице —
 // иначе сотрудник решит, что система сломана, и пойдёт заводить вторую связь.
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { RotateCw, Copy } from '@lucide/vue'
 import { staffParentApi, adminApi } from '@/api/endpoints'
 import { generatePassword } from '@/utils/passwordGen'
@@ -200,7 +201,7 @@ async function deleteEdit() {
     </div>
 
     <!-- ── Аккаунты родителей (правка/удаление — только админ) ────────────────────── -->
-    <div v-if="isAdmin" class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll v-if="isAdmin" class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -220,9 +221,9 @@ async function deleteEdit() {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
-    <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -252,7 +253,7 @@ async function deleteEdit() {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <!-- ── Новый родитель ──────────────────────────────────────────────────────── -->
     <div v-if="showCreate" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showCreate = false">

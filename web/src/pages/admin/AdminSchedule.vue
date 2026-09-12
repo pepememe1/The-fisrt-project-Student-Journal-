@@ -15,6 +15,7 @@
 // Почему сетка, а не карточки: перетаскивать пару в конкретный слот (день+номер) можно,
 // только когда каждый слот — видимая зона сброса, включая пустые.
 import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { RotateCw, User, Users } from '@lucide/vue'
 import { adminApi, scheduleApi } from '@/api/endpoints'
@@ -642,7 +643,7 @@ function isHover(day, slot) {
         <p v-if="loading" class="text-sm text-text3">{{ locale.t('common.loading') }}</p>
 
         <!-- Интерактивная сетка «слоты × дни» — ТОЛЬКО колледж. -->
-        <div v-else-if="isCollege" class="overflow-x-auto">
+        <StickyXScroll v-else-if="isCollege">
           <table class="w-full min-w-[820px] border-collapse select-none">
             <thead>
               <tr>
@@ -695,7 +696,7 @@ function isHover(day, slot) {
               </tr>
             </tbody>
           </table>
-        </div>
+        </StickyXScroll>
 
         <!-- Вне колледжа — тот же просмотр, что у препода/студента, без редактирования
              (ScheduleOverride там не накладывается, см. _group_schedule на сервере). -->

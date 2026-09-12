@@ -35,13 +35,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.db import SessionLocal, init_db          # noqa: E402
 from app.deps import KNOWN_ROLES                  # noqa: E402
-from app.models import User, set_user_password    # noqa: E402
+from app.models import User, set_user_password, next_moderator_number    # noqa: E402
 from app import audit                             # noqa: E402
 
 #Минимум, ниже которого заводить нельзя. Это не «политика паролей» (её у продукта нет и
 #выдумывать её здесь не место) — это защита от пустой строки и от «123», набранных в
 #спешке для учётной записи, которой открыта чужая переписка.
-MIN_PASSWORD_LEN = 8
+#Длина приходит из продукта, а не объявляется здесь второй копией: правило одно
+#(`app/security.MIN_PASSWORD_LEN`), и поднять его надо будет в одном месте.
+from app.security import MIN_PASSWORD_LEN      # noqa: E402
 
 
 def _now() -> str:
@@ -96,13 +98,17 @@ def main() -> int:
         row.full_name = args.name
         row.name = args.name
         row.deleted = False
+        #Публичный номер — та же функция, что в админке: два счётчика выдали бы двум
+        #модераторам один номер, и «модератор №3» перестал бы кого-либо обозначать.
+        if not row.mod_number:
+            row.mod_number = next_moderator_number(db)
         row.updated_at = _now()
         set_user_password(row, password)
         db.commit()
         audit.log(db, None, actor=(args.by or "cli"), role="admin",
                   action="user.moderator.create" if created else "user.moderator.password",
                   target=uid, detail=login)
-        print(f"{'Заведён' if created else 'Обновлён пароль'}: {uid} (роль moderator, логин {login})")
+        print(f"{'Заведён' if created else 'Обновлён пароль'}: {uid} (роль moderator, логин {login}, номер {row.mod_number})")
         print("Пароль нигде не сохранён — передайте его человеку и не храните в переписке.")
         return 0
     finally:

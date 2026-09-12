@@ -4,6 +4,7 @@
 // студента на сервере — stud:login (как в синке десктопа); удаление мягкое (надгробие),
 // поэтому изменения доезжают до десктопа обычным pull.
 import { ref, computed, onMounted } from 'vue'
+import StickyXScroll from '@/components/ui/StickyXScroll.vue'
 import { RotateCw, Copy } from '@lucide/vue'
 import { adminApi, scheduleApi } from '@/api/endpoints'
 import { generatePassword } from '@/utils/passwordGen'
@@ -295,7 +296,7 @@ async function del(r) {
       <AppButton variant="green" size="sm" @click="openCreate">{{ locale.t('adminStudents.addAction', '+ Добавить') }}</AppButton>
     </div>
 
-    <div class="overflow-x-auto rounded-lg border border-border bg-card shadow-card">
+    <StickyXScroll class="rounded-lg border border-border bg-card shadow-card">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border2 bg-bg2 text-left text-tiny uppercase tracking-wide text-text2">
@@ -327,7 +328,7 @@ async function del(r) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </StickyXScroll>
 
     <!-- Модалка создания/правки -->
     <div v-if="showForm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showForm = false">

@@ -306,6 +306,18 @@ export const adminApi = {
   createTeacher: (payload) => api.post('/web/admin/teachers', payload),
   updateTeacher: (login, payload) => api.put(`/web/admin/teachers/${encodeURIComponent(login)}`, payload),
   deleteTeacher: (login) => api.delete(`/web/admin/teachers/${encodeURIComponent(login)}`),
+
+  // МОДЕРАТОРЫ. Дверь админская (`require_admin`): модератор не заводит модераторов и не
+  // перевыдаёт пароли — иначе роль, созданная разбирать жалобы, сама выписывает себе
+  // подкрепление. Сервер это и проверяет, клиент лишь не показывает пункт.
+  // ⚠️ Пароль передаём ТОЛЬКО когда его меняют: пустое поле значит «не менять», а не
+  // «стереть» (страница пароль не показывает и показать не может).
+  moderators: () => api.get('/web/admin/moderators'),
+  createModerator: (payload) => api.post('/web/admin/moderators', payload),
+  updateModerator: (login, payload) =>
+    api.put(`/web/admin/moderators/${encodeURIComponent(login)}`, payload),
+  deleteModerator: (login) =>
+    api.delete(`/web/admin/moderators/${encodeURIComponent(login)}`),
   // Перевод на курс (rollover): продвинуть текущий учебный период. Прошлые — в архив.
   rolloverTerm: (payload = {}) => api.post('/web/admin/term/rollover', payload),
   // Дата «ДД.ММ», после которой студент видит только итоговые оценки (пусто — выключено).
@@ -570,6 +582,11 @@ export const messengerApi = {
       { message_id: messageId, reason_code: reasonCode, description }),
   // Чат с модерацией (кнопка ⚙).
   moderation: () => api.get('/web/messenger/moderation'),
+  // Темы обращения для автоответчика + СОСТОЯНИЕ моего обращения (`current`). Состояние
+  // приходит с сервера, а не хранится во вкладке: обращение у человека одно, а заходит
+  // он и с телефона, и с компьютера.
+  supportCategories: () => api.get('/web/messenger/moderation/categories'),
+  pickSupportCategory: (code) => api.post('/web/messenger/moderation/category', { code }),
   // Жалоба на ПРОФИЛЬ (не на сообщение) — отдельная очередь у модерации. Снимок полей
   // делает сервер: присланный клиентом снимок это текст, который пишет жалующийся.
   reportUser: (userId, reasonCode, description = '', field = 'profile') =>
@@ -833,6 +850,16 @@ export const messengerModApi = {
     api.post(`/web/admin/messenger/users/${encodeURIComponent(uid)}/profile`, { clear: fields }),
   // Удалить любое сообщение у всех (модерация; пишется в аудит).
   deleteMessage: (mid) => api.delete(`/web/admin/messenger/messages/${mid}`),
+  // ── Очередь обращений (тикеты) ──────────────────────────────────────────────────
+  // ⚠️ Порядок задаёт СЕРВЕР (срочные наверху, дальше кто дольше ждёт) и клиент его НЕ
+  // пересортировывает: очередь читают разные экраны, и «срочное наверху» обязано
+  // означать на всех одно и то же.
+  support: (status = 'open') =>
+    api.get('/web/admin/messenger/support', { params: { status } }),
+  // Взять обращение: модератор подключается к чату и представляется своим НОМЕРОМ.
+  claimSupport: (id) => api.post(`/web/admin/messenger/support/${id}/claim`),
+  resolveSupport: (id, note = '') =>
+    api.post(`/web/admin/messenger/support/${id}/resolve`, { note }),
 }
 
 // Мероприятия/события (олимпиады, конкурсы и т.п.) — заводит преподаватель/админ,
