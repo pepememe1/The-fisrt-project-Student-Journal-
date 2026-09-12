@@ -68,6 +68,56 @@ python "$ROOT/tools/make_desktop_patch.py" \
   ${OLD_EXE:+--old "$OLD_EXE" --old-version "$OLD_VERSION"} \
   --out "$WORK/updates"
 
+# 2.5. ПОДПИСЬ ВЫПУСКА — шаг выкладки, а не отдельный ритуал.
+#
+# 🔥 ЗДЕСЬ ДВОЕ СУТОК БЫЛО ПУСТО, А ДОКУМЕНТАЦИЯ УТВЕРЖДАЛА ОБРАТНОЕ (12.09.2026).
+# `tools/sign_release.py` был написан, его поведение под тестами, а звать его было
+# НЕКОМУ: ни шага подписи, ни ворот. Классический «обещание без вызывающего», и он же
+# однажды остановил готовую выкладку — по записи в документе отказались выкладывать,
+# сославшись на ворота, которых не существовало.
+#
+# ⚠️ Шаг УСЛОВНЫЙ по наличию ЗАКРЫТОГО ключа, и это не лень. Пока ключ не заведён,
+# подпись не требуется (`UPDATE_PUBLIC_KEYS` пуст → `release_signature_ok` пропускает
+# всё), и выкладка обязана работать РОВНО как раньше: безусловная подпись сломала бы
+# выкладку на всякой машине без ключа, то есть в CI и у второго разработчика.
+#
+# 🔴 НО ЕСЛИ КЛЮЧ В КОДЕ ЕСТЬ, А ЗАКРЫТОЙ ПОЛОВИНЫ НА МАШИНЕ НЕТ — ЭТО ОТКАЗ, а не
+# «выложим без подписи». Неподписанный манифест зальётся успешно, сервер отдаст его с
+# кодом 200, шаг «версия обновилась» пройдёт — а программа у каждого, кто уже поставил
+# сборку с этим ключом, молча перестанет обновляться. Узнали бы через недели.
+KEY_PATH="${GB_SIGNING_KEY:-$HOME/.gradebook/release_signing_key.hex}"
+KEYS_CONFIGURED="$(python -c "
+import sys; sys.path.insert(0, r'$ROOT')
+import desktop_update as DU
+print('1' if DU.UPDATE_PUBLIC_KEYS else '')")"
+if [ -f "$KEY_PATH" ]; then
+  echo "-- подписываю манифест ключом $KEY_PATH"
+  python "$ROOT/tools/sign_release.py" --manifest "$WORK/updates/manifest.json" --key "$KEY_PATH"
+  # ВОРОТА: проверяем ТОЙ ЖЕ функцией, какой проверяет клиент. Сверять «есть ли поле
+  # sig» бессмысленно — подпись чужим ключом это тоже поле.
+  python -c "
+import io, json, sys
+sys.path.insert(0, r'$ROOT')
+import desktop_update as DU
+m = json.load(io.open(r'$WORK/updates/manifest.json', encoding='utf-8'))
+full = m.get('full') or {}
+if not DU.release_signature_ok(m.get('version',''), full.get('sha256',''), full.get('sig','')):
+    raise SystemExit('ВОРОТА: подпись манифеста НЕ сходится с UPDATE_PUBLIC_KEYS — '
+                     'выкладка остановлена, иначе парк молча остался бы без обновлений')
+for p in m.get('patches') or []:
+    if not DU.release_signature_ok(m.get('version',''), p.get('target_sha256',''), p.get('sig','')):
+        raise SystemExit('ВОРОТА: подпись патча %s не сходится' % p.get('file'))
+print('-- подпись проверена тем же release_signature_ok, каким проверяет клиент')"
+elif [ -n "$KEYS_CONFIGURED" ]; then
+  echo "ОСТАНОВЛЕНО: в desktop_update.UPDATE_PUBLIC_KEYS ключ ЕСТЬ, а закрытой половины"
+  echo "на этой машине нет ($KEY_PATH). Неподписанный манифест зальётся успешно и молча"
+  echo "лишит обновлений всех, у кого стоит сборка с этим ключом. Выкладывайте с машины,"
+  echo "где лежит ключ, либо задайте GB_SIGNING_KEY."
+  exit 5
+else
+  echo "-- ключ подписи не заведён: выкладываем без подписи (поведение как до 10.09.2026)"
+fi
+
 # 3. Заливка. Манифест кладём ПОСЛЕДНИМ: пока его нет, программы не увидят версию,
 #    файлов которой ещё нет на диске сервера.
 ssh -i "$SSH_KEY" -o BatchMode=yes "$HOST" "mkdir -p $REMOTE_DL/updates"
