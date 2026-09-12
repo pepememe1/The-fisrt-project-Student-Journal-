@@ -958,6 +958,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
            class="flex-1 rounded-sm border border-border bg-card2 px-4 py-2.5 text-center text-sm font-semibold text-text transition-colors hover:border-accent hover:text-accent">
           {{ loc.t('login.legalPrivacy', 'Политику обработки персональных данных') }}
         </a>
+        <!-- ⚠️ Правила — RouterLink, а не `<a href>`: это НАША страница внутри приложения
+             (`/rules`), а не статический файл из `web/public`, как соседние два. Ссылка
+             через `href` перезагрузила бы всю SPA ради перехода на соседний экран. -->
+        <RouterLink to="/rules" target="_blank"
+           class="flex-1 rounded-sm border border-border bg-card2 px-4 py-2.5 text-center text-sm font-semibold text-text transition-colors hover:border-accent hover:text-accent">
+          {{ loc.t('rules.title', 'Правила сообщества') }}
+        </RouterLink>
       </div>
     </Card>
       </div><!-- правый столбец -->

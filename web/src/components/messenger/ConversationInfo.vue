@@ -259,6 +259,24 @@ async function clearHistory() {
   await m.deleteConversation(true)
   emit('close')
 }
+
+// Действия над чатом, запрошенные из трёх точек карточки профиля.
+//
+// 🔑 КАРТОЧКА ИХ НЕ ВЫПОЛНЯЕТ САМА, и это не церемония: её показывают и из каталога, где
+// беседы ещё нет вовсе, и из группы, где «удалить переписку» означало бы совсем другое.
+// Знает текущую беседу вызывающий — он и делает. Вторая реализация внутри карточки
+// разошлась бы с этой молча (наш класс «правило одно, реализаций две»).
+function onChatAction(action) {
+  if (action === 'clear-history') return clearHistory()
+  if (action === 'delete-chat') return removeChat()
+  if (action === 'add-to-group') {
+    //Пикер участников живёт в CreateChatDialog, и открывает его СПИСОК ЧАТОВ — другая
+    //ветка дерева. Просьба уходит через стор: дублировать диалог ради одной кнопки
+    //незачем, а событие пришлось бы протащить через четыре компонента.
+    m.askAddToGroup(activePeer.value)
+    emit('close')
+  }
+}
 </script>
 
 <template>
@@ -317,7 +335,8 @@ async function clearHistory() {
                УЧАСТНИКОВ ГРУППЫ/КАНАЛА ниже (там «очистить историю»/«удалить
                переписку» этого конкретного человека не имеют смысла, а здесь беседа и
                есть личный чат с ним же). -->
-          <PeerProfileCard :peer-data="activePeer" @messaged="emit('close')" />
+          <PeerProfileCard :peer-data="activePeer" @messaged="emit('close')"
+                           @chat-action="onChatAction" />
           <!-- ЛС с администратором — другой контекст переписки, поясняем границы. -->
           <div v-if="activePeer.role === 'admin'" class="mt-3 rounded-lg border border-border bg-card2 p-3 text-sm text-text2">
             <p class="mb-1 text-[11px] uppercase tracking-wide text-text3">{{ locale.t('profilePanel.notHere', 'Лучше не сюда') }}</p>
@@ -579,18 +598,15 @@ async function clearHistory() {
       <div class="flex flex-wrap gap-2 border-t border-border p-3">
         <!-- ⚠️ Для группы и канала этих кнопок здесь БОЛЬШЕ НЕТ: они переехали в «ещё»
              наверху (25.08.2026). Два места для одного действия — верный способ
-             однажды поправить одно и забыть другое. В личном чате панели с кнопками
-             наверху нет, поэтому там ряд остаётся. -->
-        <button v-if="!isGroupOrChannel" type="button" @click="clearHistory"
+             однажды поправить одно и забыть другое.
+             ⚠️ 11.09.2026 у ЛИЧНОГО чата они переехали туда же — в три точки карточки
+             профиля, по прямому требованию «в эту же категорию перенеси очистку чата и
+             удаление переписки, чтобы не захламлять». Ряд оставлен только для
+             «Избранного»: своей карточки профиля у чата с самим собой нет, и без этой
+             кнопки очистить блокнот стало бы нечем. -->
+        <button v-if="isSaved" type="button" @click="clearHistory"
                 class="rounded-lg border border-border2 px-3 py-2 text-sm text-text2 hover:bg-bg2">
           {{ locale.t('conversationInfo.clearHistory', 'Очистить историю') }}
-        </button>
-
-        <!-- «Избранное» удалить нельзя: оно одно на пользователя и всегда есть в списке
-             (как в Telegram). Для него доступна только очистка — кнопка выше. -->
-        <button v-if="!isSaved && !isGroupOrChannel" type="button" @click="removeChat"
-                class="ml-auto flex items-center gap-1.5 rounded-lg border border-red/40 px-3 py-2 text-sm font-semibold text-red hover:bg-red/10">
-          <Trash2 class="size-4" />{{ locale.t('conversationInfo.deleteConversation', 'Удалить переписку') }}
         </button>
       </div>
 

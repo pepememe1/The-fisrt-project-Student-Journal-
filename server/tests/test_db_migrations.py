@@ -17,7 +17,8 @@ from app.db import (engine, _ensure_participant_state_columns,
                     _ensure_notify_event_columns, _ensure_group_category_column,
                     _ensure_user_password_set_at_column, _ensure_user_birthday_column,
                     _ensure_message_report_target_column, _ensure_audit_chain_columns,
-                    _ensure_conversation_avatar_column, _ensure_message_addon_columns)
+                    _ensure_conversation_avatar_column, _ensure_message_addon_columns,
+                    _ensure_muted_user_term_columns)
 
 
 def test_ensure_participant_state_columns_adds_role_columns_to_old_schema(client):
@@ -345,6 +346,47 @@ def test_ensure_conversation_avatar_column_adds_to_old_schema(client):
         row = conn.execute(text("SELECT title, avatar FROM conversations")).fetchone()
     assert row[0] == "Старая группа"
     assert not (row[1] or ""), "старой беседе подставили какую-то картинку"
+def test_muted_user_term_columns_are_added_to_an_old_schema(client):
+    """Мьюты БЕЗ срока (схема ДО 11.09.2026) — миграция дописывает три колонки.
+
+    🔥 ГЛАВНОЕ ЗДЕСЬ НЕ «КОЛОНКА ПОЯВИЛАСЬ», А ЧТО СТАНЕТ С УЖЕ НАКАЗАННЫМИ. Пустой
+    `muted_until` означает БЕССРОЧНО, то есть ровно прежнее поведение: выкладка не
+    освобождает молча тех, кого уже замьютили. Поставь миграция любую дату — и обновление
+    сняло бы действующие ограничения, причём незаметно для модерации: узнали бы мы об этом
+    от того, кого глушили.
+
+    ⚠️ В свежей тестовой базе ветка «колонки не было» не срабатывает вовсе — зелёные
+    тесты модерации сами по себе здесь не значат ничего.
+    """
+    from app.routers.messenger._common import _mute_expired
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE muted_users"))
+        conn.execute(text("""CREATE TABLE muted_users (
+            user_id VARCHAR PRIMARY KEY, muted_by VARCHAR DEFAULT '',
+            muted_at VARCHAR DEFAULT ''
+        )"""))
+        #Живой мьют «из прошлого»: он обязан уцелеть и остаться бессрочным.
+        conn.execute(text("INSERT INTO muted_users (user_id, muted_by, muted_at) "
+                          "VALUES ('stud:old', 'admin', '2026-09-01T00:00:00+00:00')"))
+    engine.dispose()
+    _ensure_muted_user_term_columns()
+    cols = {c["name"] for c in inspect(engine).get_columns("muted_users")}
+    assert {"muted_until", "reason", "muted_by_role"} <= cols
+    _ensure_muted_user_term_columns()      # идемпотентность — второй вызов не падает
+
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT user_id, muted_until, reason FROM muted_users")).fetchone()
+    assert row[0] == "stud:old", "старый мьют пропал при миграции"
+    assert not (row[1] or ""), "старому мьюту подставили срок — это амнистия выкладкой"
+
+    #И главное следствие: пустой срок НЕ считается истёкшим, то есть человек остаётся
+    #наказанным ровно так же, как до обновления.
+    class _Row:
+        muted_until = ""
+    assert _mute_expired(_Row()) is False
+
+
 def test_group_archive_columns_are_added_to_an_old_schema():
     """groups.archived/… на СТАРОЙ схеме (архив групп, 03.09.2026).
 

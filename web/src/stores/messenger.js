@@ -376,6 +376,17 @@ export const useMessengerStore = defineStore('messenger', () => {
     const detail = e?.response?.data?.detail
     if (st === 429 && detail && typeof detail === 'object' && detail.mascot) {
       _startCooldown(detail.cooldown_seconds || 8)
+    } else if (st === 403 && detail && typeof detail === 'object' && detail.muted) {
+      //🔥 ОГРАНИЧЕНИЕ МОДЕРАЦИИ ПРИХОДИТ СЛОВАРЁМ (срок, причина), а не строкой, и общая
+      //ветка ниже показала бы вместо него «Сообщение не отправлено». Человек, которого
+      //ограничили ПОСЛЕ открытия чата, не узнал бы ни срока, ни причины — то есть ровно
+      //то состояние, ради выхода из которого срок и заводился.
+      restriction.value = {
+        muted: true,
+        muted_until: detail.muted_until || '',
+        reason: detail.reason || '',
+      }
+      setNotice(detail.message || 'Переписка ограничена модерацией.')
     } else if ([400, 403, 429].includes(st)) {
       //400 сюда попал не для полноты: так отвечает разбор команд («/отчет чужая-группа»),
       //и без плашки человек видел ровно ничего — сообщение исчезало без объяснений.
@@ -552,6 +563,70 @@ export const useMessengerStore = defineStore('messenger', () => {
       await loadChats()
       return true
     } catch { return false }
+  }
+
+  // ── Моё ограничение переписки (мьют модерацией) ──────────────────────────────────
+  //
+  // Живёт ЗДЕСЬ, а не в компоненте: читают его два места — плашка в композере и разбор
+  // отказа при отправке. Две копии разошлись бы молча, и человек видел бы «ограничение
+  // снято» при работающем запрете (или наоборот).
+  //
+  // ⚠️ Спрашиваем ОДИН РАЗ при открытии мессенджера, а не опросом: мьют не появляется
+  // сам — его выдаёт человек, и раз в несколько секунд спрашивать про состояние, которое
+  // меняется раз в месяц, значит вернуть тот опрос, который мы прореживали (§PERF).
+  // Выданный при открытом чате мьют доедет отказом на первой же отправке: сервер
+  // возвращает срок и причину тем же телом (см. `_mute_refusal`).
+  const restriction = ref({ muted: false, muted_until: '', reason: '' })
+
+  async function loadRestriction() {
+    try {
+      const { data } = await messengerApi.myRestriction()
+      restriction.value = data || { muted: false }
+    } catch { /* не критично: барьер всё равно на сервере */ }
+  }
+
+  // Кого просили добавить в новую группу (из трёх точек карточки профиля). Список чатов
+  // следит за этим полем и открывает пикер участников с уже отмеченным человеком.
+  // ⚠️ Поле, а не событие: карточка и список чатов — соседние ветки дерева, между ними
+  // нет ни одного пропса, а протаскивать событие через четыре компонента значит завести
+  // четыре места, где его однажды забудут передать.
+  const groupDraftPeer = ref(null)
+  function askAddToGroup(peer) { groupDraftPeer.value = peer || null }
+  function clearGroupDraft() { groupDraftPeer.value = null }
+
+  // ── Действия над ЛЮБОЙ беседой из списка (не над открытой) ───────────────────────
+  //
+  // 🔥 ПОЧЕМУ НЕ «ОТКРЫТЬ, ПОТОМ СДЕЛАТЬ». Соблазн переиспользовать `deleteConversation`,
+  // открыв нужный чат, велик — и он ломает ровно то, ради чего человек лезет в меню:
+  // открытие беседы ПОМЕЧАЕТ ЕЁ ПРОЧИТАННОЙ и тянет ленту с сервера. То есть «очистить
+  // историю» у непрочитанного чата попутно снимало бы с него значок, а «пометить
+  // непрочитанным» вообще не имело бы смысла. Побочный эффект тут дороже переиспользования.
+  async function clearChatById(convId) {
+    try {
+      await messengerApi.deleteChat(convId, true)
+      if (activeId.value === convId) { messages.value = []; pinned.value = [] }
+      await loadChats()
+      return true
+    } catch { return false }
+  }
+
+  async function deleteChatById(convId) {
+    try {
+      await messengerApi.deleteChat(convId, false)
+      if (activeId.value === convId) clearActive()
+      await loadChats()
+      return true
+    } catch { return false }
+  }
+
+  async function muteChatById(convId, muted) {
+    try { await messengerApi.muteChat(convId, muted); await loadChats(); return true }
+    catch { return false }
+  }
+
+  async function markChatUnread(convId) {
+    try { await messengerApi.markUnread(convId); await loadChats(); return true }
+    catch { return false }
   }
 
   async function markReadActive() {
@@ -1232,6 +1307,9 @@ export const useMessengerStore = defineStore('messenger', () => {
     loadChats, loadInvites, answerInvite, loadMessages, loadOlder, selectChat, openWith, send, sendGif, markReadActive, loadPinned, setNotice,
     openModeration, pollOnce, startPolling, stopPolling, searchUsers, sendTyping,
     setReply, clearReply, clearActive, reset, loadConvInfo, muteConversation,
+    clearChatById, deleteChatById, muteChatById, markChatUnread,
+    groupDraftPeer, askAddToGroup, clearGroupDraft,
+    restriction, loadRestriction,
     pendingJump, openById,
     deleteConversation, selectAll, selectNone,
     editMessage, setPinned, removeMessage, forwardMessages, reportMessage,

@@ -265,7 +265,13 @@ def send_message(conv_id: str, payload: dict = Body(...),
         raise HTTPException(status_code=403, detail="В канал могут писать только авторы")
     if part.silenced:                        #«/mute»-заглушка модератора — не глобальный мьют
         raise HTTPException(status_code=403, detail="Вы заглушены в этой беседе")
-    _guard_can_write(db, user)               #глобальный мьют (403) + анти-флуд (429)
+    #Блокировка проверяется и ЗДЕСЬ, а не только при открытии лички: беседа могла быть
+    #создана ДО блокировки и остаётся открытой у обоих. Проверка на входе в чат защитила
+    #бы только новые пары — то есть не защитила бы никого из тех, кто уже переписывался.
+    _guard_direct_write(db, conv, user)
+    #`conv` передаётся НЕ для удобства: по виду беседы барьер решает, идёт ли речь
+    #о чате с модерацией — единственном, который остаётся открытым под мьютом.
+    _guard_can_write(db, user, conv)          #глобальный мьют (403) + анти-флуд (429)
     body = (payload.get("body") or "").strip()
     #⚠️ ФАЙЛ САМ ПО СЕБЕ — ЗАКОННОЕ СООБЩЕНИЕ. Гейт пустого текста стоял РАНЬШЕ разбора
     #вложения, поэтому «выбрал файл, ничего не написал, отправил» отвечало 400 — но уже
@@ -466,6 +472,10 @@ def add_reaction(mid: int, payload: dict = Body(...),
         raise HTTPException(status_code=400, detail="Недопустимая реакция")
     m = _message_in_conv(db, mid)
     _require_participant(db, m.conversation_id, user)
+    #Реакция — не сообщение, но у собеседника она появляется под его же строкой, то есть
+    #это способ дотянуться до человека, который этого не хочет. Блокировка обязана её
+    #закрывать, иначе она дырява ровно в ту сторону, ради которой её ставят.
+    _guard_direct_write(db, _conversation(db, m.conversation_id), user)
     if m.deleted_at:
         raise HTTPException(status_code=400, detail="Сообщение удалено")
     exists = (db.query(MessageReaction)
@@ -540,6 +550,9 @@ def pin_message(mid: int, user: User = Depends(get_current_user), db: Session = 
     conv = _conversation(db, m.conversation_id)
     if not _can_pin(part, conv):
         raise HTTPException(status_code=403, detail="Недостаточно прав для закрепления")
+    #Закрепление меняет ОБЩЕЕ состояние беседы и добавляет системную строку — у
+    #заблокировавшего это появляется на экране так же, как сообщение.
+    _guard_direct_write(db, conv, user)
     if m.deleted_at:
         raise HTTPException(status_code=400, detail="Сообщение удалено")
     m.pinned = True
@@ -601,6 +614,10 @@ def forward_messages(payload: dict = Body(...),
     for conv_id in targets:
         if _participant(db, conv_id, user.id) is None:
             continue                       #в чужую беседу переслать нельзя
+        #🔒 Блокировку проверяем и здесь. Без этого запрет обходился пересылкой: участие в
+        #беседе у заблокированного осталось, и «переслать» клало в ту же личку что угодно.
+        #Отказ ОБЩИЙ, как и при отправке, — он не имеет права раскрывать блокировку.
+        _guard_direct_write(db, _conversation(db, conv_id), user)
         for mid in mids:
             src = db.query(Message).filter(Message.id == mid).first()
             if src is None or src.deleted_at:

@@ -892,3 +892,43 @@ def rename_conversation(conv_id: str, payload: dict = Body(...),
             _system(db, conv_id, event, arg)   #§D6
         _broadcast(db, conv_id)
     return {"ok": True, "title": conv.title, "about": conv.about, "avatar": conv.avatar or ""}
+
+
+@router.post("/chats/{conv_id}/unread")
+def mark_unread(conv_id: str, user: User = Depends(get_current_user),
+                db: Session = Depends(get_db)):
+    """Пометить беседу НЕПРОЧИТАННОЙ (личное состояние, на собеседника не влияет).
+
+    Зачем: человек открыл чат, прочитал вполглаза и хочет вернуться — но «прочитано» уже
+    проставилось самим фактом открытия. Без этой ручки единственный способ не забыть —
+    помнить, а список чатов существует ровно затем, чтобы не помнить.
+
+    🔑 СДВИГАЕМ `last_read_at` НА МОМЕНТ ПЕРЕД ПОСЛЕДНИМ СООБЩЕНИЕМ, а не заводим флаг
+    «непрочитано». Флаг был бы ВТОРЫМ источником правды рядом с меткой: счётчик
+    непрочитанного, значок в списке чатов, галочки «прочитано» у собеседника и пуши
+    считаются по метке, и первое забытое место показало бы человеку ноль там, где он сам
+    поставил «непрочитано». Здесь забывать нечего — правда остаётся одна.
+
+    ⚠️ У СОБЕСЕДНИКА ГАЛОЧКА «ПРОЧИТАНО» ОТКАТИТСЯ, и это осознанный размен: метка одна
+    на оба смысла. Прятать откат пришлось бы тем самым вторым полем, ради отсутствия
+    которого всё и сделано, а цена ошибки несимметрична — «увидел прочитанным, а он не
+    читал» хуже, чем «галочка мигнула».
+    """
+    part = _require_participant(db, conv_id, user)
+    last = (db.query(Message).filter(Message.conversation_id == conv_id,
+                                     Message.deleted_at.is_(None))
+            .order_by(Message.id.desc()).first())
+    if last is None:
+        return {"ok": True, "unread": 0}        #нечего помечать: беседа пуста
+    #На «мгновение раньше» последнего сообщения: ставить метку автора нельзя (он сам мог
+    #написать только что), а вычитать секунду из времени — значит промахнуться мимо
+    #сообщений, пришедших в ту же секунду. Берём метку ПРЕДЫДУЩЕГО сообщения, а если его
+    #нет — пустую строку, то есть «не читал ничего».
+    prev = (db.query(Message).filter(Message.conversation_id == conv_id,
+                                     Message.id < last.id,
+                                     Message.deleted_at.is_(None))
+            .order_by(Message.id.desc()).first())
+    part.last_read_at = (prev.created_at if prev else "")
+    db.commit()
+    _broadcast(db, conv_id)                     #галочки у собеседника считаются по метке
+    return {"ok": True, "unread": 1}

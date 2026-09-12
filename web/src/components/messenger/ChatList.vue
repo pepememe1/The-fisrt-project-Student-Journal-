@@ -4,14 +4,17 @@
 // чату открывает переписку; по человеку — личный чат; по каналу — вступление/открытие.
 import { ref, computed, watch, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Search, Plus, Users, Radio, Megaphone, Briefcase, Star, Archive, MoreVertical, Pin, PinOff, ArchiveRestore, PieChart, UserPlus } from '@lucide/vue'
+import { Search, Plus, Users, Radio, Megaphone, Briefcase, Star, Archive, MoreVertical,
+         Pin, PinOff, ArchiveRestore, PieChart, UserPlus,
+         Bell, BellOff, MailOpen, Eraser, Trash2, Ban } from '@lucide/vue'
 import { useMessengerStore } from '@/stores/messenger'
+import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import { useLocaleStore } from '@/stores/locale'
 import { roleLabel } from '@/config/roles'
 import { profilePlate } from '@/theme/palette'
 import { nameDecor } from '@/config/nameEffects'
-import { curatorApi } from '@/api/endpoints'
+import { curatorApi, messengerApi } from '@/api/endpoints'
 import { messagePreview } from '@/utils/messagePreview'
 import CreateChatDialog from './CreateChatDialog.vue'
 import GroupPickDialog from './GroupPickDialog.vue'
@@ -20,6 +23,7 @@ import MyStatusPicker from './MyStatusPicker.vue'
 import Avatar from '@/components/ui/Avatar.vue'
 
 const m = useMessengerStore()
+const toast = useToast()
 const auth = useAuthStore()
 const locale = useLocaleStore()
 const { chats, invites, dir, channels, activeId, loadingChats } = storeToRefs(m)
@@ -181,11 +185,73 @@ async function onCreate(payload) {
   else await m.createChannel(payload.title, payload.ids, payload.isPublic, payload.about)
 }
 
-// Меню «⋮» на строке чата: закрепить/открепить, в архив/из архива. Личное состояние —
-// докладов о собеседнике/канале это не требует (см. docs/MESSENGER-ADDON-PLAN-GPT*.md).
+// Меню строки чата. Открывается «⋮» И ПРАВОЙ КНОПКОЙ по самой строке — как в Telegram и
+// Discord, откуда пришёл присланный образец. Все пункты ЛИЧНЫЕ: собеседник о них не
+// узнаёт (см. docs/MESSENGER-ADDON-PLAN-GPT*.md).
+//
+// ⚠️ «Открыть в отдельном окне» из образца НЕ реализовано, и это осознанно: у нас одна
+// SPA на сайт, телефон и окно программы. В браузере это было бы `window.open`, в
+// Capacitor и WebView2 — ничего (второго окна там не бывает), то есть пункт работал бы у
+// одной платформы из трёх и молча не работал у двух. Пункт, который иногда ничего не
+// делает, хуже отсутствующего.
 function toggleMenu(convId) { menuFor.value = menuFor.value === convId ? '' : convId }
+
+// ПКМ по строке: открыть меню ЭТОГО чата, а не родное меню браузера. Родное здесь
+// бесполезно («Назад», «Обновить»), а привычка нажимать правой на строку списка — общая
+// для всех мессенджеров.
+function onRowContext(convId) { menuFor.value = convId }
+
 async function onPin(chat) { menuFor.value = ''; await m.togglePinChat(chat.conversation_id, !chat.pinned) }
 async function onArchive(chat) { menuFor.value = ''; await m.toggleArchiveChat(chat.conversation_id, !chat.archived) }
+async function onMute(chat) { menuFor.value = ''; await m.muteChatById(chat.conversation_id, !chat.muted) }
+
+// «Пометить непрочитанной» — сервер сдвигает метку прочтения назад (флага «непрочитано»
+// у нас нет намеренно: он стал бы вторым источником правды рядом с меткой, по которой
+// считаются и счётчик, и галочки у собеседника). См. chats.mark_unread.
+async function onUnread(chat) {
+  menuFor.value = ''
+  await m.markChatUnread(chat.conversation_id)
+}
+
+async function onClear(chat) {
+  menuFor.value = ''
+  if (!window.confirm(locale.t('messenger.confirmClear', 'Очистить историю у себя? Сообщения пропадут только у вас.'))) return
+  await m.clearChatById(chat.conversation_id)
+}
+
+async function onDelete(chat) {
+  menuFor.value = ''
+  if (!window.confirm(locale.t('messenger.confirmDelete', 'Удалить чат у себя? У собеседника переписка сохранится.'))) return
+  await m.deleteChatById(chat.conversation_id)
+}
+
+// Блокировка доступна только в ЛИЧНОМ чате: в группе и канале блокировать нечего —
+// человек там пишет всем сразу, и запрет означал бы, что один участник вычёркивает
+// другого из учебной беседы (для этого есть модерация).
+function peerOf(chat) {
+  return chat.kind === 'direct' ? (chat.peer_id || chat.peer?.id || '') : ''
+}
+
+async function onBlock(chat) {
+  menuFor.value = ''
+  const uid = peerOf(chat)
+  if (!uid) return
+  if (!window.confirm(locale.t('messenger.confirmBlock', 'Заблокировать собеседника? Он не сможет вам писать и не узнает об этом.'))) return
+  //⚠️ Молчать нельзя ни в успехе, ни в отказе. Блокировка НИЧЕГО не меняет на экране —
+  //чат остаётся на месте, собеседник не уведомляется, — поэтому без подтверждения человек
+  //не знает, сработало ли нажатие, и жмёт ещё раз. А проглоченная ошибка выглядела бы
+  //ровно так же, как успех.
+  try {
+    await messengerApi.blockUser(uid, true)
+    toast.show(locale.t('peerProfile.blocked', 'Заблокирован. Он об этом не узнает.'))
+  } catch {
+    toast.show(locale.t('common.error', 'Не получилось'))
+  }
+}
+
+//Просьба «добавить в группу» из карточки профиля: открываем пикер с уже отмеченным
+//человеком. Наблюдение, а не событие, — см. объяснение у `groupDraftPeer` в сторе.
+watch(() => m.groupDraftPeer, (peer) => { if (peer) createKind.value = 'group' })
 
 onMounted(() => { m.loadChats() })
 </script>
@@ -289,7 +355,11 @@ onMounted(() => { m.loadChats() })
         <p v-if="!loadingChats && !shownChats.length && !invites.length" class="p-4 text-center text-sm text-text3">
           {{ tab === 'archive' ? locale.t('messenger.archiveEmpty', 'В архиве пусто.') : locale.t('messenger.noChatsYet', 'Пока нет переписок. Найдите человека через поиск') }}<span v-if="canCreate && tab === 'chats'"> {{ canCreateChannel ? locale.t('messenger.orCreateHint', 'или создайте группу/канал кнопкой «+»') : locale.t('messenger.orCreateGroupHint', 'или соберите группу кнопкой «+»') }}</span>.
         </p>
+        <!-- ПКМ по строке открывает то же меню, что «⋮». Родное меню браузера здесь
+             бесполезно («Назад», «Обновить»), а привычка нажимать правой на строку
+             списка — общая для всех мессенджеров, откуда и пришёл образец. -->
         <div v-for="c in shownChats" :key="c.conversation_id"
+             @contextmenu.prevent="onRowContext(c.conversation_id)"
              class="group relative flex w-full items-center gap-3 border-b border-border/50 px-3 py-2.5 transition-colors"
              :class="activeId === c.conversation_id ? 'bg-accent-glow' : 'hover:bg-bg2'">
           <button type="button" @click="m.selectChat(c)" class="flex min-w-0 flex-1 items-center gap-3 text-left">
@@ -353,13 +423,38 @@ onMounted(() => { m.loadChats() })
                     :class="{ 'opacity-100 bg-bg2': menuFor === c.conversation_id }">
               <MoreVertical class="size-4" />
             </button>
+            <!-- Подложка-ловушка: без неё меню закрывается только повторным нажатием на
+                 «⋮», и промахнувшийся мимо пункта остаётся с открытым меню. -->
+            <div v-if="menuFor === c.conversation_id" class="fixed inset-0 z-10" @click.stop="menuFor = ''" />
             <div v-if="menuFor === c.conversation_id"
-                 class="absolute right-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-lg border border-border2 bg-card py-1 shadow-card">
+                 class="absolute right-0 top-full z-20 mt-1 w-56 overflow-hidden rounded-lg border border-border2 bg-card py-1 shadow-card">
+              <button type="button" @click.stop="onArchive(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+                <component :is="c.archived ? ArchiveRestore : Archive" class="size-4 text-text3" />{{ c.archived ? locale.t('messenger.unarchive', 'Из архива') : locale.t('messenger.archiveAction', 'В архив') }}
+              </button>
               <button type="button" @click.stop="onPin(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
                 <component :is="c.pinned ? PinOff : Pin" class="size-4 text-text3" />{{ c.pinned ? locale.t('messenger.unpin', 'Открепить') : locale.t('messenger.pin', 'Закрепить') }}
               </button>
-              <button type="button" @click.stop="onArchive(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
-                <component :is="c.archived ? ArchiveRestore : Archive" class="size-4 text-text3" />{{ c.archived ? locale.t('messenger.unarchive', 'Из архива') : locale.t('messenger.archiveAction', 'В архив') }}
+              <button type="button" @click.stop="onMute(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+                <component :is="c.muted ? Bell : BellOff" class="size-4 text-text3" />{{ c.muted ? locale.t('messenger.unmuteChat', 'Включить уведомления') : locale.t('messenger.muteChat', 'Выключить уведомления') }}
+              </button>
+              <button type="button" @click.stop="onUnread(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+                <MailOpen class="size-4 text-text3" />{{ locale.t('messenger.markUnread', 'Пометить непрочитанным') }}
+              </button>
+
+              <div class="my-1 h-px bg-border2" />
+
+              <button type="button" @click.stop="onClear(c)" class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+                <Eraser class="size-4 text-text3" />{{ locale.t('messenger.clearHistory', 'Очистить историю') }}
+              </button>
+              <!-- Разрушительное — внизу и цветом: промахнувшийся мимо «Очистить» не
+                   должен попасть в «Удалить». -->
+              <button v-if="c.kind !== 'saved'" type="button" @click.stop="onDelete(c)"
+                      class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red hover:bg-bg2">
+                <Trash2 class="size-4" />{{ locale.t('messenger.deleteChat', 'Удалить чат') }}
+              </button>
+              <button v-if="peerOf(c)" type="button" @click.stop="onBlock(c)"
+                      class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red hover:bg-bg2">
+                <Ban class="size-4" />{{ locale.t('messenger.block', 'Заблокировать') }}
               </button>
             </div>
           </div>
@@ -402,7 +497,8 @@ onMounted(() => { m.loadChats() })
       </template>
     </div>
 
-    <CreateChatDialog v-if="createKind" :kind="createKind" @create="onCreate" @close="createKind = ''" />
+    <CreateChatDialog v-if="createKind" :kind="createKind" :preset="m.groupDraftPeer"
+                      @create="onCreate" @close="createKind = ''; m.clearGroupDraft()" />
     <GroupPickDialog v-if="showGroupPick"
                      :title="groupPickFor === 'practice'
                        ? locale.t('messenger.groupPractice', 'Практика группы')

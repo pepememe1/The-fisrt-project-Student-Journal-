@@ -20,7 +20,8 @@
 // (чужой профиль) этого не касается — там ни «о себе», ни заметка не редактируются.
 import { ref, computed, onMounted, watch } from 'vue'
 import { resetDraft, syncDraft } from '@/utils/draftSync'
-import { Camera, Send, Pencil, ImageIcon, Film, Trash2 } from '@lucide/vue'
+import { Camera, Send, Pencil, ImageIcon, Film, Trash2,
+         MoreHorizontal, UserPlus, Share2, Ban, Flag, Eraser } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useProfileStore, BIO_LIMIT } from '@/stores/profile'
@@ -33,6 +34,7 @@ import { messengerApi } from '@/api/endpoints'
 import Avatar from '@/components/ui/Avatar.vue'
 import AvatarCropper from '@/components/AvatarCropper.vue'
 import GifPicker from '@/components/messenger/GifPicker.vue'
+import ReportUserDialog from '@/components/messenger/ReportUserDialog.vue'
 import StampEgg from '@/components/easter/StampEgg.vue'
 import { useToast } from '@/composables/useToast'
 
@@ -48,7 +50,10 @@ const props = defineProps({
   effectOverride: { type: String, default: null },
   nameColorOverride: { type: String, default: null },
 })
-const emit = defineEmits(['messaged'])
+// 'chat-action' — очистка истории и удаление переписки выполняет ВЫЗЫВАЮЩИЙ: карточку
+// открывают и из каталога, где беседы ещё нет вовсе, и своей копии этих действий у неё
+// быть не должно (вторая реализация разошлась бы с шапкой чата молча).
+const emit = defineEmits(['messaged', 'chat-action'])
 
 const auth = useAuthStore()
 const profile = useProfileStore()
@@ -267,6 +272,82 @@ defineExpose({
   isDirty, commit, discard,
 })
 
+// ── Три точки: действия над ЧЕЛОВЕКОМ ────────────────────────────────────────────────
+//
+// 🔑 ПОЧЕМУ ОНИ СОБРАНЫ ЗДЕСЬ, А НЕ РАЗБРОСАНЫ ПО ЭКРАНУ. Очистка истории и удаление
+// переписки раньше жили в шапке чата, рядом с «позвать в группу» и «пожаловаться» их не
+// было вовсе. Получалось, что действия НАД СОБЕСЕДНИКОМ ищутся в трёх разных местах, а
+// шапка чата обрастала кнопками, которые нужны раз в полгода. Требование было дословным:
+// «в эту же категорию перенеси очистку чата и удаление переписки, чтобы не захламлять».
+//
+// ⚠️ Порядок пунктов значим: разрушительное — внизу и отдельной группой. Человек,
+// промахнувшийся мимо «Поделиться», не должен попасть в «Удалить переписку».
+const menuOpen = ref(false)
+const reportOpen = ref(false)
+const reportBusy = ref(false)
+const blocked = ref(false)
+
+// Кого я заблокировал — спрашиваем при открытии карточки: без этого пункт всегда
+// предлагал бы «Заблокировать», и человек не понимал бы, сработало ли прошлое нажатие.
+async function loadBlocked() {
+  if (isSelf.value) return
+  try {
+    const { data } = await messengerApi.blocks()
+    blocked.value = (data?.blocked_ids || []).includes(shown.value.id)
+  } catch { /* список блокировок не критичен для карточки */ }
+}
+onMounted(loadBlocked)
+
+async function toggleBlock() {
+  menuOpen.value = false
+  const next = !blocked.value
+  try {
+    await messengerApi.blockUser(shown.value.id, next)
+    blocked.value = next
+    // ⚠️ Подтверждение показываем ТОЛЬКО себе и нейтральным текстом. Заблокированному не
+    // сообщают ничего — иначе блокировка становится способом объявить человеку, что он
+    // неприятен (то же решение у Telegram и Discord).
+    toast.show(next ? locale.t('peerProfile.blocked', 'Заблокирован. Он об этом не узнает.')
+                    : locale.t('peerProfile.unblocked', 'Блокировка снята.'))
+  } catch { toast.show(locale.t('common.error', 'Не получилось')) }
+}
+
+// «Поделиться контактом» = отправить ТЕГ человека в другой чат. Ссылка ведёт в его
+// профиль; пересылать карточку целиком незачем — она и так собирается по id, а копия
+// полей устарела бы в тот же день, когда человек сменит аватарку.
+async function shareContact() {
+  menuOpen.value = false
+  const link = `${location.origin}/${auth.role}/messages?peer=${encodeURIComponent(shown.value.id)}`
+  try {
+    await navigator.clipboard.writeText(`@${shown.value.full_name} ${link}`)
+    toast.show(locale.t('peerProfile.shareCopied', 'Ссылка на профиль скопирована — вставьте в любой чат'))
+  } catch {
+    // Буфер обмена недоступен (нет разрешения, небезопасный контекст) — это не поломка,
+    // но молчать нельзя: человек нажал и ничего не произошло.
+    toast.show(locale.t('peerProfile.shareFailed', 'Не удалось скопировать ссылку'))
+  }
+}
+
+async function submitReport(payload) {
+  reportBusy.value = true
+  try {
+    await messengerApi.reportUser(shown.value.id, payload.reasonCode,
+                                  payload.description, payload.field)
+    reportOpen.value = false
+    toast.show(locale.t('peerProfile.reported', 'Жалоба отправлена модерации'))
+  } catch { toast.show(locale.t('common.error', 'Не получилось')) }
+  finally { reportBusy.value = false }
+}
+
+// Очистка истории и удаление переписки — ТЕ ЖЕ действия, что были в шапке чата, просто
+// собранные сюда. Реализацию не дублируем: наружу уходит событие, а выполняет его тот,
+// кто знает текущую беседу (у карточки её может не быть вовсе — её открывают и из
+// каталога, где чата ещё нет).
+function ask(action) {
+  menuOpen.value = false
+  emit('chat-action', action)
+}
+
 // ── Кнопка «Сообщение» ────────────────────────────────────────────────────────────────
 async function sendMessage() {
   if (isSelf.value) return
@@ -393,11 +474,72 @@ async function sendMessage() {
         <p class="mt-1 truncate text-[13px] text-text2">{{ metaLine }}</p>
       </div>
 
-      <button v-if="!isSelf" type="button" @click="sendMessage"
-              class="mt-3.5 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5
-                     text-sm font-semibold text-white transition hover:bg-accent2 sm:w-auto sm:justify-start">
-        <Send class="size-4" />{{ locale.t('peerProfile.messageLong', 'Написать сообщение') }}
-      </button>
+      <!-- Кнопка «Написать» и три точки стоят ПАРОЙ: три точки без соседа выглядят
+           самостоятельным разделом, а не «ещё действия над этим человеком». -->
+      <div v-if="!isSelf" class="mt-3.5 flex items-center gap-2">
+        <button type="button" @click="sendMessage"
+                class="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5
+                       text-sm font-semibold text-white transition hover:bg-accent2 sm:flex-none sm:justify-start">
+          <Send class="size-4" />{{ locale.t('peerProfile.messageLong', 'Написать сообщение') }}
+        </button>
+
+        <div class="relative shrink-0">
+          <button type="button" @click="menuOpen = !menuOpen"
+                  :aria-label="locale.t('peerProfile.more', 'Ещё')"
+                  class="grid size-10 place-items-center rounded-lg border border-border2 text-text2
+                         transition hover:bg-bg2 hover:text-text">
+            <MoreHorizontal class="size-5" />
+          </button>
+
+          <!-- Подложка-ловушка клика: без неё меню закрывается только повторным нажатием
+               на те же три точки, и человек, промахнувшийся мимо пункта, остаётся с
+               открытым меню поверх карточки. -->
+          <div v-if="menuOpen" class="fixed inset-0 z-40" @click="menuOpen = false" />
+
+          <div v-if="menuOpen"
+               class="absolute right-0 z-50 mt-1 w-60 overflow-hidden rounded-xl border border-border2
+                      bg-card py-1 shadow-xl">
+            <button type="button" @click="ask('add-to-group')"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+              <UserPlus class="size-4 text-text3" />{{ locale.t('peerProfile.addToGroup', 'Добавить в группу') }}
+            </button>
+            <button type="button" @click="shareContact"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+              <Share2 class="size-4 text-text3" />{{ locale.t('peerProfile.share', 'Поделиться контактом') }}
+            </button>
+
+            <div class="my-1 h-px bg-border2" />
+
+            <button type="button" @click="ask('clear-history')"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+              <Eraser class="size-4 text-text3" />{{ locale.t('peerProfile.clearHistory', 'Очистить историю') }}
+            </button>
+            <button type="button" @click="ask('delete-chat')"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-text hover:bg-bg2">
+              <Trash2 class="size-4 text-text3" />{{ locale.t('peerProfile.deleteChat', 'Удалить переписку') }}
+            </button>
+
+            <div class="my-1 h-px bg-border2" />
+
+            <!-- Разрушительное — отдельной группой и внизу: промахнувшийся мимо
+                 «Поделиться» не должен попасть в блокировку. -->
+            <button type="button" @click="toggleBlock"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-bg2"
+                    :class="blocked ? 'text-text' : 'text-red'">
+              <Ban class="size-4" :class="blocked ? 'text-text3' : 'text-red'" />
+              {{ blocked ? locale.t('peerProfile.unblock', 'Разблокировать')
+                         : locale.t('peerProfile.block', 'Заблокировать') }}
+            </button>
+            <button type="button" @click="menuOpen = false; reportOpen = true"
+                    class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-red hover:bg-bg2">
+              <Flag class="size-4" />{{ locale.t('peerProfile.report', 'Пожаловаться на профиль') }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <ReportUserDialog :open="reportOpen" :user="shown" :busy="reportBusy"
+                        @close="reportOpen = false" @submit="submitReport" />
 
       <!-- О себе -->
       <div class="mt-4 rounded-lg border border-border bg-card2 p-3">

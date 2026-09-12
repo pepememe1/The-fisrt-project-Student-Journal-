@@ -115,6 +115,15 @@ def test_no_stale_path_to_a_moved_plan_is_left_in_the_code():
     skip_dirs = ("node_modules", "graphify-out", ".git", "dist", "__pycache__",
                  "docs\\done", "docs/done")
     exts = (".py", ".js", ".mjs", ".vue", ".sh", ".md", ".txt", ".yml")
+    #🔥 СНИМКИ ПРОШЛОГО ПРОПУСКАЕМ, и это не послабление сторожу.
+    #`CLAUDE.md` и `docs/HISTORY.md` вне git и сливаются руками, поэтому рядом с ними
+    #живут датированные копии: предок для следующего трёхстороннего слияния и «как было
+    #до». Такая копия ОБЯЗАНА содержать прежние пути — она описывает состояние на свою
+    #дату, и «починить» её значит подделать снимок, по которому потом сверяются.
+    #Требовать от них актуальности — то же, что требовать её от git-истории.
+    #⚠️ Узнаём их по ИМЕНИ (`.bak-`/`.base-` + дата), а не по расширению: обычный `.md`
+    #в репозитории по-прежнему проверяется весь.
+    snapshots = (".bak-", ".base-")
     bad = []
     for base, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs if not any(s in os.path.join(base, d)
@@ -124,6 +133,8 @@ def test_no_stale_path_to_a_moved_plan_is_left_in_the_code():
         for fn in files:
             if not fn.endswith(exts):
                 continue
+            if any(s in fn for s in snapshots):
+                continue                       #датированный снимок — см. объяснение выше
             path = os.path.join(base, fn)
             try:
                 with open(path, encoding="utf-8") as f:

@@ -69,6 +69,7 @@ const AdminAiSettings = () => import('@/pages/admin/AdminAiSettings.vue')
 const AdminData = () => import('@/pages/admin/AdminData.vue')
 const AdminServer = () => import('@/pages/admin/AdminServer.vue')
 const AdminMessenger = () => import('@/pages/admin/AdminMessenger.vue')
+const RulesPage = () => import('@/pages/RulesPage.vue')
 const ParentJournal = () => import('@/pages/parent/ParentJournal.vue')
 const AdminParents = () => import('@/pages/admin/AdminParents.vue')
 const AdminAudit = () => import('@/pages/admin/AdminAudit.vue')
@@ -234,6 +235,23 @@ export const routes = [
     ],
   },
 
+  // МОДЕРАТОР ────────────────────────────────────────────
+  // Отдельная ветка, а не «админ с урезанным меню»: страж ниже сверяет `meta.role` с
+  // ролью человека, то есть чужие разделы недостижимы адресом, а не спрятаны. Разделов
+  // ровно столько, сколько в NAV.moderator, — пункт меню без маршрута даёт 404 у
+  // человека, пункт без меню даёт раздел, в который никто не войдёт (и то и другое у
+  // нас уже случалось, см. RAILLESS_VIEWS).
+  {
+    path: '/moderator', component: AppShell, meta: { requiresAuth: true, role: 'moderator' },
+    children: [
+      { path: '', component: AdminMessenger, meta: { title: 'Модерация', i18nTitle: 'nav.moderation' } },
+      { path: 'messages', component: MessengerPage, meta: { title: 'Сообщения', i18nTitle: 'nav.messages' } },
+      { path: 'notifications', component: NotificationsPage, meta: { title: 'Уведомления', i18nTitle: 'nav.notifications' } },
+      profileToSettings,
+      page('settings', Settings, 'Настройки', 'nav.settings'),
+    ],
+  },
+
   // РОДИТЕЛЬ ─────────────────────────────────────────────
   // Пять страниц и ни одной больше. Guard по роли ниже не пустит его в чужую ветку, но
   // на защиту это не влияет: каждый серверный эндпоинт проверяет роль сам (инвариант §6).
@@ -260,6 +278,12 @@ export const routes = [
   // ⚠️ БЕЗ AppShell: страница самостоятельная, как экран входа. Сюда попадают, только
   // если в адресе чужая роль, и показывать при этом чужое меню было бы странно вдвойне.
   { path: '/404', component: NotFoundPage, meta: { requiresAuth: true } },
+  // Правила сообщества. ПУБЛИЧНЫЕ и по прямому адресу — требование дословное: «сделай её
+  // как отдельную вкладку на сайте, чтобы можно было открыть как по кнопке, так и
+  // изменением адреса в адресной строке». Без входа — потому что человек читает их ровно
+  // тогда, когда собрался пожаловаться или уже получил ограничение, а второе состояние
+  // легко совпадает с «не могу войти».
+  { path: '/rules', component: RulesPage, meta: { public: true, title: 'Правила сообщества', i18nTitle: 'router.rulesTitle' } },
   { path: '/:pathMatch(.*)*', redirect: (to) => ({ path: '/404', query: { from: to.path } }) },
 ]
 

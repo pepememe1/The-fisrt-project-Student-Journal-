@@ -609,8 +609,10 @@ def test_global_mute_blocks_send_and_create(client):
     """Замьюченный модерацией не может ни писать, ни создавать беседы; снятие мьюта — снова может."""
     admin, (a_id, a), (b_id, b), _ = _setup(client)
     conv = _conv(client, a, b_id)
-    #Мьютим преподавателя A глобально.
-    r = client.post(f"/web/admin/messenger/users/{a_id}/mute", json={"muted": True}, headers=admin)
+    #Мьютим преподавателя A глобально. ⚠️ СРОК ОБЯЗАТЕЛЕН с 11.09.2026 — бессрочный мьют
+    #снимать некому, о наказанном просто перестают вспоминать (см. `mod_mute_user`).
+    r = client.post(f"/web/admin/messenger/users/{a_id}/mute",
+                    json={"muted": True, "hours": 3}, headers=admin)
     assert r.status_code == 200 and r.json()["muted"] is True
     assert client.post(f"/web/messenger/chats/{conv}/messages",
                        json={"body": "нельзя"}, headers=a).status_code == 403
@@ -623,11 +625,11 @@ def test_global_mute_blocks_send_and_create(client):
 
 
 def test_mute_requires_admin_and_not_admin_target(client):
-    """Мьютить может только админ; замьютить администратора нельзя."""
+    """Мьютить может только модерация; замьютить администратора нельзя."""
     admin, (a_id, a), (b_id, b), _ = _setup(client)
-    #Преподаватель не может мьютить (require_admin → 403).
+    #Преподаватель не может мьютить (require_moderation → 403).
     assert client.post(f"/web/admin/messenger/users/{b_id}/mute",
-                       json={"muted": True}, headers=a).status_code == 403
+                       json={"muted": True, "hours": 1}, headers=a).status_code == 403
     #Замьютить администратора нельзя (модераторы не глушат друг друга) → 400.
     from app.db import SessionLocal
     from app.models import User
@@ -648,7 +650,8 @@ def test_muted_user_flag_visible_to_admin_only(client):
                       json={"body": "грубо"}, headers=a).json()["id"]
     client.post("/web/messenger/reports",
                 json={"message_id": mid, "reason_code": "harassment"}, headers=b)
-    client.post(f"/web/admin/messenger/users/{a_id}/mute", json={"muted": True}, headers=admin)
+    client.post(f"/web/admin/messenger/users/{a_id}/mute",
+                json={"muted": True, "hours": 1}, headers=admin)
     rep = client.get("/web/admin/messenger/reports?status=open", headers=admin).json()["reports"][0]
     assert rep["reported"]["muted"] is True
     #В обычном каталоге муты чужого аккаунта всегда False (не палим модерационное состояние).

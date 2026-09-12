@@ -163,7 +163,9 @@ def test_globally_muted_user_cannot_ask(client):
     bob_id, bob = _student(client, admin, "bob", "Боб Бобов")
     conv = _group(client, teacher, [bob_id])
 
-    r = client.post(f"/web/admin/messenger/users/{bob_id}/mute", headers=admin)
+    #⚠️ Срок обязателен с 11.09.2026 — бессрочных мьютов сервер не выдаёт.
+    r = client.post(f"/web/admin/messenger/users/{bob_id}/mute",
+                    json={"muted": True, "hours": 1}, headers=admin)
     assert r.status_code == 200, r.text
     assert _ask(client, conv, bob).status_code == 403
 

@@ -27,15 +27,18 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ... import audit, events, msg_limit
 from ...db import get_db, SessionLocal
-from ...deps import get_current_user, require_admin
+from ...deps import (get_current_user, require_admin, require_moderation,
+                    MODERATION_ROLES)
 from ...security import decode_token
 from ...models import (
     Attachment,
+    AuditEvent,
     AuthSession,
     Conversation, ConversationIgnore, ConversationInvite, ConversationParticipant,
     ConversationRole,
     CuratorReport, Group, Message, MessageHidden,
-    MessageReport, MessageReaction, MessageEdit, MessageTemplate, MutedUser,
+    BlockedUser, MessageReport, MessageReaction, MessageEdit, MessageTemplate,
+    MutedUser, UserReport,
     NotifyEvent, ParentLink, SubjectHours,
     UserStatus, User, UserNote, direct_conversation_id,
 )
@@ -44,8 +47,12 @@ router = APIRouter(prefix="/web/messenger", tags=["messenger"])
 #дёшево пересоздаётся, переживать перезапуск ей незачем, а лишняя таблица на боевом VPS
 #(1 ядро, 960 МБ) стоит дороже. Новое сообщение меняет ключ — устаревшее не отдастся.
 _SUMMARY_CACHE = {}
-#Модерация — ТОЛЬКО админ (require_admin), отдельный префикс. Каждый просмотр чужой
-#переписки пишется в аудит (152-ФЗ, подотчётность — см. MESSENGER-PLAN.md §3, §10).
+#Модерация — админ И выделенный модератор (`require_moderation`), отдельный префикс.
+#⚠️ Префикс исторический — `/web/admin/messenger`, хотя админ тут уже не единственный.
+#Менять его нельзя: адрес зашит в клиенте и в уже опубликованном APK, а переименование
+#ради красоты дало бы 404 там, где у людей работает модерация. Роль решает `Depends`,
+#а не строка пути.
+#Каждый просмотр чужой переписки пишется в аудит (152-ФЗ — см. MESSENGER-PLAN.md §3, §10).
 mod_router = APIRouter(prefix="/web/admin/messenger", tags=["messenger-moderation"])
 
 
@@ -315,18 +322,64 @@ def _status_map(db: Session, user_ids) -> dict:
     return {r.user_id: {"kind": r.kind, "custom_text": r.custom_text} for r in rows}
 
 
+def _mute_row(db: Session, user_id: str):
+    """Действующий мьют пользователя или None. ЕДИНСТВЕННАЯ точка, где решается вопрос
+    «наказан ли он прямо сейчас», — и ровно поэтому срок проверяется здесь.
+
+    🔥 ИСТЁКШИЙ МЬЮТ СНИМАЕТСЯ ЗДЕСЬ ЖЕ, СТРОКОЙ ИЗ БАЗЫ, а не «считается снятым».
+    Оставить строку и просто не учитывать её — значит завести второе состояние: человек
+    писать может, а в списке модерации он «замьючен». Разошлись бы они молча, и модератор
+    снимал бы мьют, которого нет. Тот же приём, что у напоминаний (`_fire_due_reminders`):
+    срабатывание по сроку проверяется ПОПУТНО, при обращении, а не фоновым планировщиком —
+    на одноядерном бою лишний поток дороже пользы, а узнать о снятии мьюта можно только
+    попыткой написать, то есть ровно в этот момент.
+
+    ⚠️ Пустой `muted_until` — БЕССРОЧНО. Все мьюты, наложенные до появления срока, именно
+    такие (миграция даёт им ""), и трактовать пустоту как «истёк» значило бы амнистировать
+    их выкладкой."""
+    row = db.query(MutedUser).filter(MutedUser.user_id == user_id).first()
+    if row is None:
+        return None
+    if _mute_expired(row):
+        db.delete(row)
+        db.commit()
+        return None
+    return row
+
+
+def _mute_expired(row) -> bool:
+    """Вышел ли срок. Сравнение СТРОК ISO UTC — они сортируются лексикографически, и
+    разбор `datetime` тут не нужен; обе метки ставит один и тот же `_now()`."""
+    until = (getattr(row, "muted_until", "") or "").strip()
+    return bool(until) and until <= _now()
+
+
 def _is_muted(db: Session, user_id: str) -> bool:
     """Замьючен ли пользователь глобально (модерацией). Один индексный поиск по PK."""
-    return db.query(MutedUser).filter(MutedUser.user_id == user_id).first() is not None
+    return _mute_row(db, user_id) is not None
 
 
 def _muted_set(db: Session, user_ids) -> set:
-    """Множество замьюченных из набора id — чтобы не бить БД по одному в списках модерации."""
+    """Множество замьюченных из набора id — чтобы не бить БД по одному в списках модерации.
+
+    ⚠️ Истёкшие строки здесь ТОЖЕ убираются: список модерации обязан показывать то же
+    состояние, что и барьер записи. Разойдись они — и модератор увидел бы «замьючен» у
+    человека, который уже пишет."""
     ids = {i for i in user_ids if i}
     if not ids:
         return set()
-    rows = db.query(MutedUser.user_id).filter(MutedUser.user_id.in_(ids)).all()
-    return {r[0] for r in rows}
+    rows = db.query(MutedUser).filter(MutedUser.user_id.in_(ids)).all()
+    live, dead = set(), []
+    for r in rows:
+        if _mute_expired(r):
+            dead.append(r)
+        else:
+            live.add(r.user_id)
+    for r in dead:
+        db.delete(r)
+    if dead:
+        db.commit()
+    return live
 
 
 def _create_flood_ticket(db: Session, user: User) -> None:
@@ -341,14 +394,51 @@ def _create_flood_ticket(db: Session, user: User) -> None:
     db.commit()
 
 
-def _guard_can_write(db: Session, user: User) -> None:
+def _mute_refusal(row) -> dict:
+    """Машиночитаемый отказ при мьюте: до каких пор и за что.
+
+    🔥 РАНЬШЕ ОТКАЗ БЫЛ ГЛУХИМ — «вы ограничены модерацией и временно не можете отправлять
+    сообщения». Человек не знал ни срока, ни причины, и единственным его действием было
+    написать в поддержку «почему не отправляется»: то есть наказание само генерировало
+    обращения, которые разбирает та же модерация. Срок и причина здесь не украшение, а
+    способ НЕ получить это обращение.
+
+    ⚠️ Словарь, а не строка: клиенту нужно посчитать оставшееся время и показать его
+    живым отсчётом, а разбирать для этого русский текст — та же беда, что читать число
+    из подписи. Поле `message` оставлено для тех мест, где ответ показывают как есть."""
+    until = (getattr(row, "muted_until", "") or "").strip()
+    reason = (getattr(row, "reason", "") or "").strip()
+    tail = " до " + until if until else " бессрочно"
+    return {
+        "message": "Вы ограничены модерацией и не можете отправлять сообщения" + tail + ".",
+        "muted": True,
+        "muted_until": until,                #"" = бессрочно
+        "reason": reason,
+        "appeal_hint": "Обжаловать можно в чате с модерацией — он остаётся открытым.",
+    }
+
+
+def _guard_can_write(db: Session, user: User, conv=None) -> None:
     """Единый барьер записи в мессенджер: глобальный мьют модерацией (403) → маскот-кулдаун
     (429 с эскалацией, §D2) → жёсткий анти-флуд (429, задел на скрипт, игнорирующий UI).
-    Зовётся из всех точек, создающих сообщения (отправка, пересылка)."""
-    if _is_muted(db, user.id):
-        raise HTTPException(
-            status_code=403,
-            detail="Вы ограничены модерацией и временно не можете отправлять сообщения.")
+    Зовётся из всех точек, создающих сообщения (отправка, пересылка).
+
+    🔥 ЧАТ С МОДЕРАЦИЕЙ ИЗ-ПОД МЬЮТА ПИШЕТСЯ ВСЕГДА, и это не поблажка. Мьют глушил ВСЁ,
+    включая беседу `mod:{user.id}`, — то есть человек, которого наказали, физически не мог
+    спросить «за что» и обжаловать. Наказание без возможности возразить — не модерация, а
+    тупик: он пойдёт искать обходной путь (второй аккаунт, жалоба преподавателю), и первым
+    об этом узнает не модератор. Анти-флуд на этот чат ДЕЙСТВУЕТ как обычно — иначе
+    обжалование стало бы каналом, которым можно завалить сервер.
+
+    ⚠️ Проверяется ВИД беседы, а не её id: строка `mod:{id}` собирается в одном месте, но
+    сверять здесь её формат значило бы завести второе место, знающее этот формат.
+    """
+    if conv is not None and getattr(conv, "kind", "") == "moderation":
+        pass                                 #обжалование — см. объяснение выше
+    else:
+        row = _mute_row(db, user.id)
+        if row is not None:
+            raise HTTPException(status_code=403, detail=_mute_refusal(row))
     mascot_wait, violations = msg_limit.mascot_check(user.id)
     if mascot_wait:
         if violations == 3:                    #ровно на переходе к «систематическому»
@@ -456,6 +546,58 @@ def _parent_group_names(db: Session, parent: User) -> set:
     return {s.group_name for s in active_children(db, parent) if s.group_name}
 
 
+def _blocked_between(db: Session, a_id: str, b_id: str) -> bool:
+    """Есть ли между двумя людьми блокировка — В ЛЮБУЮ СТОРОНУ.
+
+    🔑 ИМЕННО В ЛЮБУЮ, и это не перестраховка. Блокировка одностороння по смыслу («я не
+    хочу, чтобы он мне писал»), но если проверять только направление «он→я», то
+    заблокировавший сохранит право писать заблокированному — то есть получит канал, в
+    котором ответить ему нельзя. Односторонняя переписка без возможности возразить хуже
+    и для того, и для другого; поэтому запрет симметричен, а несимметрично лишь то, КТО
+    может его снять.
+    """
+    return db.query(BlockedUser).filter(
+        ((BlockedUser.blocker_id == a_id) & (BlockedUser.blocked_id == b_id))
+        | ((BlockedUser.blocker_id == b_id) & (BlockedUser.blocked_id == a_id))
+    ).first() is not None
+
+
+def _guard_not_blocked(db: Session, user: User, peer_id: str) -> None:
+    """Отказать, если между людьми есть блокировка.
+
+    ⚠️ ТЕКСТ ОТКАЗА ОБЩИЙ И НЕ НАЗЫВАЕТ ПРИЧИНУ. «Вас заблокировали» превратило бы
+    блокировку в способ сообщить человеку, что он неприятен, — то есть в инструмент
+    конфликта вместо защиты от него (то же решение у Telegram и Discord). Цена размена
+    названа честно: отправитель видит неинформативный отказ и может решить, что сломался
+    сервер. Это меньшее зло, и лечится оно текстом «сообщение не доставлено», а не
+    признанием.
+    """
+    if peer_id and _blocked_between(db, user.id, peer_id):
+        raise HTTPException(status_code=403, detail="Сообщение не доставлено.")
+
+
+def _guard_direct_write(db: Session, conv, user: User) -> None:
+    """Можно ли ПИСАТЬ в эту беседу с точки зрения блокировок.
+
+    🔑 ОДНА ФУНКЦИЯ НА ВСЕ ТОЧКИ СОЗДАНИЯ СООБЩЕНИЙ. Их сейчас две — обычная отправка и
+    пересылка, — и блокировку сначала получила только первая: переслать заблокировавшему
+    можно было что угодно, то есть запрет не значил ничего. Правило, расписанное у одного
+    потребителя из двух, — это наш класс «первое забытое место»; здесь забыть нечего, пока
+    новая точка зовёт эту функцию, а не повторяет условие рядом.
+
+    ⚠️ Только ЛИЧНЫЕ беседы. В группе и канале человек пишет всем сразу, и запрет означал
+    бы, что один участник вычёркивает другого из учебной беседы (для этого есть модерация,
+    а для «не хочу видеть» — `ConversationIgnore`).
+    """
+    if getattr(conv, "kind", "") != "direct":
+        return
+    others = (db.query(ConversationParticipant)
+              .filter(ConversationParticipant.conversation_id == conv.id,
+                      ConversationParticipant.user_id != user.id).all())
+    for other in others:
+        _guard_not_blocked(db, user, other.user_id)
+
+
 def _guard_direct_allowed(db: Session, user: User, peer: User) -> None:
     """Кому вообще можно написать лично. Ограничение существует только вокруг РОДИТЕЛЕЙ.
 
@@ -463,7 +605,11 @@ def _guard_direct_allowed(db: Session, user: User, peer: User) -> None:
     ребёнка. Пускать его в переписку со всем колледжем нельзя: это ни студентам, ни
     преподавателям не нужно, а поводов для конфликтов даёт много. Поэтому родителю открыты
     только два направления: родители той же группы и куратор этой группы. Симметрично: и
-    написать родителю может только тот, кому родитель мог бы написать сам."""
+    написать родителю может только тот, кому родитель мог бы написать сам.
+
+    ⚠️ Здесь же проверяется БЛОКИРОВКА — она про ту же дверь («можно ли нам переписываться»),
+    и заводить для неё вторую проверку рядом значило бы однажды забыть одну из двух."""
+    _guard_not_blocked(db, user, peer.id)
     if "parent" not in (user.role, peer.role):
         return
     parent, other = (user, peer) if user.role == "parent" else (peer, user)

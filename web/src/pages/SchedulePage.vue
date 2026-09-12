@@ -33,30 +33,14 @@ import DataFreshness from '@/components/ui/DataFreshness.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import Badge from '@/components/ui/Badge.vue'
+import { dayLabels, kindMap } from '@/config/scheduleView'
 
 const locale = useLocaleStore()
-// Ключ дня ('Пнд' и т.п.) — это ФОРМАТ ДАННЫХ (совпадает с ключами, которые кладёт
-// сервер в schedule/parser.py) и НЕ переводится; переводится только видимая подпись.
-const DAY_KEYS = ['Пнд', 'Втр', 'Срд', 'Чтв', 'Птн', 'Сбт']
-const DAYS = computed(() => [
-  [DAY_KEYS[0], locale.t('schedulePage.day.mon', 'Понедельник')],
-  [DAY_KEYS[1], locale.t('schedulePage.day.tue', 'Вторник')],
-  [DAY_KEYS[2], locale.t('schedulePage.day.wed', 'Среда')],
-  [DAY_KEYS[3], locale.t('schedulePage.day.thu', 'Четверг')],
-  [DAY_KEYS[4], locale.t('schedulePage.day.fri', 'Пятница')],
-  [DAY_KEYS[5], locale.t('schedulePage.day.sat', 'Суббота')],
-])
-// Ключи типа занятия ('лек', 'пр'…) — тоже данные с сервера, не переводятся; цвет
-// варианта Badge — тоже не текст.
-const KIND = computed(() => ({
-  лек: [locale.t('schedulePage.kind.lecture', 'Лекция'), 'blue'],
-  пр: [locale.t('schedulePage.kind.practice', 'Практика'), 'green'],
-  лаб: [locale.t('schedulePage.kind.lab', 'Лаборат.'), 'muted'],
-  сем: [locale.t('schedulePage.kind.seminar', 'Семинар'), 'muted'],
-  конс: [locale.t('schedulePage.kind.consult', 'Консульт.'), 'muted'],
-  зач: [locale.t('schedulePage.kind.pass', 'Зачёт'), 'red'],
-  экз: [locale.t('schedulePage.kind.exam', 'Экзамен'), 'red'],
-}))
+// ⚠️ Подписи дней и типов занятий переехали в `config/scheduleView.js` — их рисует ещё и
+// расписание БЕЗ входа (`PublicSchedule.vue`), а два словаря на одни и те же данные
+// разошлись бы молча: одна и та же пара звалась бы по-разному на двух экранах.
+const DAYS = computed(() => dayLabels(locale.t))
+const KIND = computed(() => kindMap(locale.t))
 const DEFAULT_CATEGORY = 'college'
 
 const auth = useAuthStore()

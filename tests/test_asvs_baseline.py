@@ -201,3 +201,36 @@ def test_checker_notices_a_broken_report(lib, standard, baseline, name, mutate):
     mutate(spoiled)
     problems = lib.check(standard, spoiled)
     assert problems, "порча «%s» прошла незамеченной — сторож не работает" % name
+
+
+def test_the_edition_hash_does_not_depend_on_line_endings(lib, tmp_path):
+    """Прогон не имеет права зависеть от того, чья это машина (12.09.2026).
+
+    Хеш редакции считался по СЫРЫМ байтам, а git на Windows выкладывает файл с CRLF: в
+    репозитории 149 407 байт с LF, на диске 152 181 с CRLF. Содержимое посимвольно то же,
+    а сторож объявлял «редакция стандарта СМЕНИЛАСЬ» — то есть был КРАСНЫМ у одного
+    человека и зелёным у другого. Сигнал, который всегда красный, перестают читать, и
+    вместе с ним перестают читать настоящие расхождения вердиктов, ради которых сторож
+    и заведён.
+
+    ⚠️ Байты собираются числами, без escape-последовательностей: тест про переводы строк,
+    написанный через них, слишком легко испортить при переносе — и он тогда проверит не то.
+    """
+    LF, CR = bytes([10]), bytes([13])
+    body = b'{"a": 1,' + LF + b' "b": 2}' + LF
+    lf_file = tmp_path / "lf.json"
+    crlf_file = tmp_path / "crlf.json"
+    lf_file.write_bytes(body)
+    crlf_file.write_bytes(body.replace(LF, CR + LF))
+    assert lf_file.read_bytes() != crlf_file.read_bytes(), "файлы обязаны отличаться байтами"
+    assert lib.standard_sha256(str(lf_file)) == lib.standard_sha256(str(crlf_file))
+
+
+def test_the_edition_hash_still_notices_a_real_change(lib, tmp_path):
+    """Обратный ход: нормализация не имеет права ослабить смысл проверки. Другая
+    редакция отличается ТЕКСТОМ требований, и это обязано быть заметно."""
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_bytes(b'{"req": "one"}')
+    b.write_bytes(b'{"req": "two"}')
+    assert lib.standard_sha256(str(a)) != lib.standard_sha256(str(b))

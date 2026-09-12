@@ -1388,6 +1388,31 @@ const VECTOR_SENDER = 'system'
 //крупно), с прозрачным фоном — иначе белый угол светил бы бельмом на тёмной теме.
 //Набор эмоций не трогаем: он живёт своей жизнью и используется дашбордом.
 const VECTOR_AVATAR = '/mascot/vector-avatar.webp'
+
+// ── Своё ограничение (мьют модерацией) ───────────────────────────────────────────────
+//
+// Состояние живёт в СТОРЕ: его читает и эта плашка, и разбор отказа при отправке (когда
+// ограничение выдали уже после открытия чата). Две копии разошлись бы молча.
+const { restriction } = storeToRefs(m)
+onMounted(() => m.loadRestriction())
+
+// Остаток словами. Пересчитывается на каждую перерисовку — секундного таймера здесь нет
+// намеренно: точность до секунды никому не нужна, а таймер держал бы компонент живым.
+const restrictionLeft = computed(() => {
+  const until = restriction.value?.muted_until
+  if (!until) return ''
+  const ms = new Date(until).getTime() - Date.now()
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  // ⚠️ `locale.t(key, x)` принимает ЛИБО подстановки, ЛИБО запасной текст — но не то и
+  // другое сразу (см. stores/locale.js::t). Третий аргумент молча игнорируется, поэтому
+  // число подставляем сами, а через словарь берём только единицу измерения.
+  const left = locale.t('restriction.left', 'осталось')
+  const mins = Math.ceil(ms / 60000)
+  if (mins < 60) return `${left} ${mins} ${locale.t('restriction.min', 'мин')}`
+  const hours = Math.ceil(mins / 60)
+  if (hours < 24) return `${left} ${hours} ${locale.t('restriction.hour', 'ч')}`
+  return `${left} ${Math.ceil(hours / 24)} ${locale.t('restriction.day', 'д')}`
+})
 function isVector(msg) { return msg.sender_id === VECTOR_SENDER }
 //Отвечаем на реплику Вектора → это продолжение разговора с ним, а не обычная цитата.
 const replyingToVector = computed(() => isSaved.value && !!replyTo.value && isVector(replyTo.value))
@@ -2061,7 +2086,31 @@ function openActivities() {
       </div>
       <MascotCooldown v-if="mascotCooldown.active" :cooldown="mascotCooldown" />
 
-      <!-- Плашка анти-флуда/мьюта: «не отправляйте так часто» / «вы ограничены модерацией» -->
+      <!-- 🔥 ОГРАНИЧЕНИЕ МОДЕРАЦИИ: СРОК И ПРИЧИНА, А НЕ «вы ограничены».
+           Раньше человек узнавал о мьюте единственным способом — написав сообщение и
+           получив глухой отказ. Он не знал ни за что, ни насколько, и единственным
+           осмысленным следующим действием было обращение в поддержку, которое разбирает
+           та же модерация: наказание само себе создавало работу. Плашка висит ДО первой
+           попытки, называет срок и прямо говорит, что обжаловать можно (чат с модерацией
+           под мьютом остаётся открытым — см. _guard_can_write).
+           ⚠️ В самом чате с модерацией она не показывается: человек уже там, куда его
+           отправляют, и повторять «обжалуйте в этом чате» внутри этого чата — шум. -->
+      <div v-if="restriction.muted && !isModeration"
+           class="shrink-0 border-t border-border bg-red/10 px-3 py-2 text-xs text-red">
+        <div class="font-semibold">
+          {{ locale.t('restriction.title', 'Переписка ограничена модерацией') }}
+          <span v-if="restrictionLeft"> · {{ restrictionLeft }}</span>
+        </div>
+        <div v-if="restriction.reason" class="mt-0.5 opacity-90">
+          {{ locale.t('restriction.reason', 'Причина') }}: {{ restriction.reason }}
+        </div>
+        <button type="button" @click="m.openModeration()"
+                class="mt-1 underline underline-offset-2 hover:no-underline">
+          {{ locale.t('restriction.appeal', 'Обжаловать у модерации') }}
+        </button>
+      </div>
+
+      <!-- Плашка анти-флуда: «не отправляйте так часто» -->
       <div v-if="notice" class="shrink-0 border-t border-border bg-red/10 px-3 py-2 text-center text-xs font-semibold text-red">
         {{ notice }}
       </div>

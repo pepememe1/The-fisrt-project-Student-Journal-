@@ -13,6 +13,7 @@ messenger — мессенджер: беседы, сообщения, канал
 отвечать «не найдено» на `/quizzes`.
 """
 from . import users        # noqa: F401  — /users, /status, /templates
+from . import safety       # noqa: F401  — блокировка, жалоба на профиль, своё ограничение
 from . import chats        # noqa: F401  — /chats/*, участники, роли
 from . import messages     # noqa: F401  — сообщения, поиск, реакции, пересылка
 from . import reminders    # noqa: F401  — напоминания о сообщении

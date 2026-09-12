@@ -109,7 +109,25 @@ export const NAV = {
     // ради которой заведён, — разобрать «кто изменил оценку».
     { key: 'audit', label: 'Журнал действий', i18n: 'nav.audit', icon: ScrollText, to: '/admin/audit' },
   ],
+  // МОДЕРАТОР — четыре пункта и ни одного больше.
+  //
+  // 🔒 Список короткий НЕ из скромности. Модератор заведён разбирать конфликты, и всё,
+  // что ему показано, он видит по долгу службы — включая чужую переписку. Каждый лишний
+  // пункт здесь это ещё один раздел с ПДн студентов, открытый человеку, которому он для
+  // работы не нужен. Журнала, оценок, групп и расписания у него нет вовсе — и не потому,
+  // что скрыты: серверные ручки этих разделов требуют своих ролей и отвечают 403.
+  //
+  // ⚠️ «Сообщения» оставлены намеренно: отвечать на обращение — его прямая работа, а
+  // писать он должен из обычного мессенджера, а не из окна модерации. Иначе появился бы
+  // второй композер со своим набором возможностей, и они разошлись бы.
+  moderator: [
+    { section: 'Модерация', i18n: 'nav.sectionModeration' },
+    { key: 'moderation', label: 'Модерация', i18n: 'nav.moderation', icon: ShieldAlert, to: '/moderator', badge: 'moderationOpen' },
+    { key: 'messages', label: 'Сообщения', i18n: 'nav.messages', icon: MessagesSquare, to: '/moderator/messages', badge: 'messagesUnread' },
+    { key: 'notifications', label: 'Уведомления', i18n: 'nav.notifications', icon: Inbox, to: '/moderator/notifications', badge: 'notifyUnread' },
+    { key: 'settings', label: 'Настройки', i18n: 'nav.settings', icon: Server, to: '/moderator/settings', phoneOnly: true },
+  ],
 }
 
 export const HOME_BY_ROLE = { student: '/student', teacher: '/teacher', admin: '/admin',
-  parent: '/parent' }
+  parent: '/parent', moderator: '/moderator' }

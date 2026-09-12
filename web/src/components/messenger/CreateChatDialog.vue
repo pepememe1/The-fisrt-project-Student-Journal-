@@ -7,7 +7,12 @@ import { messengerApi, curatorApi } from '@/api/endpoints'
 import { useAuthStore } from '@/stores/auth'
 import { useLocaleStore } from '@/stores/locale'
 
-const props = defineProps({ kind: { type: String, default: 'group' } }) // group | channel
+const props = defineProps({
+  kind: { type: String, default: 'group' },   // group | channel
+  //Кого отметить сразу. Приходит из трёх точек карточки профиля («Добавить в группу»):
+  //человек уже выбран, и заставлять его искать себя же в каталоге незачем.
+  preset: { type: Object, default: null },
+})
 const emit = defineEmits(['create', 'close'])
 
 const auth = useAuthStore()
@@ -19,7 +24,9 @@ const isPublic = ref(true)
 const role = ref('student')
 const q = ref('')
 const found = ref([])
-const chosen = ref([])          // [{id, full_name}]
+const chosen = ref(props.preset
+  ? [{ id: props.preset.id, full_name: props.preset.full_name, role: props.preset.role }]
+  : [])          // [{id, full_name}]
 let debounce = null
 
 async function search() {

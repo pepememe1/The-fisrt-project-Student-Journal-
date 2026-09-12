@@ -7,7 +7,7 @@
 // Вынесено из стража роутера отдельной функцией не ради красоты: правило поведенческое,
 // в guard'е его не проверить без браузера, а сломать перестановкой условий — легко.
 
-export const ROLE_PREFIXES = ['student', 'teacher', 'admin', 'parent']
+export const ROLE_PREFIXES = ['student', 'teacher', 'admin', 'parent', 'moderator']
 
 /**
  * @param {string} path — адрес, на который человек метил

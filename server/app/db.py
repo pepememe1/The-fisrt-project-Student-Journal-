@@ -225,6 +225,7 @@ def init_db():
     _ensure_quiz_kind_column()
     _ensure_audit_chain_columns()
     _ensure_conversation_avatar_column()
+    _ensure_muted_user_term_columns()
     _ensure_hot_path_indexes()
     _migrate_slash_in_ids()
     _refresh_query_planner_stats()
@@ -387,6 +388,34 @@ def _ensure_conversation_avatar_column():
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE conversations ADD COLUMN avatar VARCHAR DEFAULT ''"))
+
+
+def _ensure_muted_user_term_columns():
+    """Идемпотентная мини-миграция: muted_users.muted_until / reason / muted_by_role.
+
+    Таблица на бою существует и хранит уже наложенные мьюты, а `create_all` новые СТОЛБЦЫ
+    в существующую таблицу не добавляет НИКОГДА. В свежей тестовой базе ветка «колонки не
+    было» не срабатывает вовсе — зелёные тесты сами по себе здесь ничего не значат;
+    регрессия на СТАРОЙ схеме живёт в `server/tests/test_db_migrations.py`.
+
+    🔥 УМОЛЧАНИЕ ПУСТОЕ, И ЭТО РЕШЕНИЕ, А НЕ ЛЕНЬ. Пустой `muted_until` означает
+    «бессрочно», то есть ровно прежнее поведение: обновление НЕ освобождает молча тех,
+    кого уже наказали. Поставь мы сюда любую дату — выкладка сняла бы действующие мьюты,
+    причём незаметно для модерации, и узнали бы мы об этом от того, кого глушили.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    try:
+        columns = {c["name"] for c in insp.get_columns("muted_users")}
+    except Exception:
+        return
+    add = [c for c in ("muted_until", "reason", "muted_by_role") if c not in columns]
+    if not add:
+        return
+    with engine.begin() as conn:
+        for name in add:
+            conn.execute(text(f"ALTER TABLE muted_users ADD COLUMN {name} VARCHAR DEFAULT ''"))
+    print("[db] muted_users: добавлены колонки %s" % ", ".join(add))
 
 
 def _ensure_audit_chain_columns():

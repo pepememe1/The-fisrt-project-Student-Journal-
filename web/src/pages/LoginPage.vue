@@ -217,6 +217,38 @@ async function onMfaDone(user) {
 // Регистрация студента / восстановление пароля — модалки под кнопкой «Войти».
 const showRegister = ref(false)
 const showRecover = ref(false)
+
+// ━━━ САМООБСЛУЖИВАНИЕ ВЫКЛЮЧЕНО (12.09.2026, требование Влада) ━━━━━━━━━━━━━━━━━━━━━
+//
+// 🔑 ПОЧЕМУ. Дословно: «на сайте ВСГУТУ нет кнопки регистрации и подобного, только вход
+// по выданному логину и паролю». Наш экран входа предлагал завести аккаунт самому и
+// восстановить пароль по почте — то есть обещал порядок, которого у заказчика нет.
+// Обещание, которого продукт не выполняет, хуже отсутствующей кнопки: студент нажимает,
+// подаёт заявку и ЖДЁТ, а ждать нечего — учётные данные выдаёт колледж.
+//
+// ⚠️ КОД НЕ УДАЛЁН НАМЕРЕННО (прямое условие Влада: «не удаляй»). Оба диалога и обе
+// серверные ручки живы и работоспособны: политика приёма студентов — решение заказчика,
+// и оно может смениться обратно. Снимается запрет ОДНОЙ строкой здесь.
+//
+// 🔒 ЗАМКОВ ТРИ, И ОДНОГО БЫЛО БЫ МАЛО. Спрятать кнопку — не защита: ref остаётся
+// доступным, и любая будущая строка `showRegister = true` (горячая клавиша, переход по
+// адресу, чужая правка) снова покажет окно, причём молча. Поэтому:
+//   1) кнопок нет в разметке вовсе (`v-if`) — их не видно, не нажать и не поймать Tab'ом;
+//   2) сами окна тоже под `v-if` с этим флагом — подняли ref обходным путём, а показывать
+//      нечего;
+//   3) открывают их только эти две функции, и они отказывают первой же строкой.
+// Это тот же приём, которым в проекте проведена граница у раздела «Сервер»: надёжен не
+// спрятанный элемент, а ОТСУТСТВУЮЩИЙ путь.
+const SELF_SERVICE_ENABLED = false
+
+function openRegister() {
+  if (!SELF_SERVICE_ENABLED) return
+  showRegister.value = true
+}
+function openRecover() {
+  if (!SELF_SERVICE_ENABLED) return
+  showRecover.value = true
+}
 </script>
 
 <template>
@@ -352,14 +384,23 @@ const showRecover = ref(false)
              действия — человеку не приходится угадывать свой маршрут. -->
         <div class="mt-3 border-t border-border pt-2.5 text-center sm:mt-4 sm:pt-3">
           <p class="text-xs font-semibold text-text2">{{ loc.t('login.audience') }}</p>
-          <p class="text-xs text-text3">{{ loc.t('login.forStudents') }}</p>
-          <div class="mt-1.5 flex flex-wrap items-center justify-center gap-2">
+          <!-- ⚠️ «Для обучающихся:» гаснет ВМЕСТЕ с кнопками. Это подпись К НИМ, и без
+               них она указывает в пустоту — читается как «здесь что-то не прогрузилось». -->
+          <p v-if="SELF_SERVICE_ENABLED" class="text-xs text-text3">{{ loc.t('login.forStudents') }}</p>
+          <div v-if="SELF_SERVICE_ENABLED" class="mt-1.5 flex flex-wrap items-center justify-center gap-2">
             <button type="button" class="rounded-sm border border-accent/40 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent-glow"
-                    @click="showRegister = true">{{ loc.t('login.register') }}</button>
+                    @click="openRegister">{{ loc.t('login.register') }}</button>
             <button type="button" class="rounded-sm border border-border2 px-3 py-1.5 text-xs font-medium text-text3 transition-colors hover:border-accent hover:text-accent"
-                    @click="showRecover = true">{{ loc.t('login.recover') }}</button>
+                    @click="openRecover">{{ loc.t('login.recover') }}</button>
           </div>
-          <p class="mt-2 text-tiny leading-relaxed text-text3">{{ loc.t('login.accountHelp') }}</p>
+          <!-- Подсказка меняется вместе с порядком: пока регистрации нет, «обратитесь к
+               администратору» относится КО ВСЕМ, а не только к преподавателю и родителю —
+               студенту тоже больше некуда нажать. -->
+          <p class="mt-2 text-tiny leading-relaxed text-text3">
+            {{ SELF_SERVICE_ENABLED
+              ? loc.t('login.accountHelp')
+              : loc.t('login.accountHelpIssued', 'Логин и пароль выдаёт колледж. Нет учётных данных — обратитесь к администратору.') }}
+          </p>
         </div>
 
         <!-- ⚠️ Кнопка одностраничника для приёмной комиссии здесь БЫЛА и убрана
@@ -477,8 +518,11 @@ const showRecover = ref(false)
       </div>
     </div>
 
-    <RegisterDialog v-if="showRegister" @close="showRegister = false" />
-    <RecoverDialog v-if="showRecover" @close="showRecover = false" />
+    <!-- 🔒 Второй замок: даже если `showRegister`/`showRecover` кто-то поднимет в обход
+         (горячая клавиша, чужая правка, отладка), показывать будет нечего. Компоненты
+         НЕ удалены — запрет снимается одной строкой `SELF_SERVICE_ENABLED`. -->
+    <RegisterDialog v-if="SELF_SERVICE_ENABLED && showRegister" @close="showRegister = false" />
+    <RecoverDialog v-if="SELF_SERVICE_ENABLED && showRecover" @close="showRecover = false" />
 
     <!-- Футер — заполняет низ, даёт «завершённость» экрану. -->
     <p class="absolute bottom-3 left-1/2 z-10 hidden w-full max-w-[94vw] -translate-x-1/2 px-4 text-center text-tiny leading-relaxed text-text3 sm:block">

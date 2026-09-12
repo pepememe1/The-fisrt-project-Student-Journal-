@@ -77,8 +77,10 @@ def test_student_still_cannot_create_a_channel(client, cast):
 
 def test_muted_student_cannot_create_a_group(client, cast):
     """Мьют модерацией закрывает и новую дверь, а не только отправку сообщений."""
+    #⚠️ СРОК ОБЯЗАТЕЛЕН с 11.09.2026: бессрочное ограничение сервер не принимает —
+    #наказание «пока не снимут» снимать некому (см. `mod_mute_user`).
     r = client.post(f"/web/admin/messenger/users/{cast['s1_id']}/mute",
-                    json={"muted": True}, headers=cast["admin"])
+                    json={"muted": True, "hours": 1}, headers=cast["admin"])
     assert r.status_code == 200, r.text
     r = client.post("/web/messenger/chats/group",
                     json={"title": "Обход"}, headers=cast["s1"])
